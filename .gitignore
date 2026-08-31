@@ -35,12 +35,21 @@ lerna-debug.log*
 !.vscode/launch.json
 !.vscode/extensions.json
 
+# AI agent directories
+.agents/
+.claude/
+.windsurf/
+skills-lock.json
+
 # dotenv environment variable files
 .env
 .env.development.local
 .env.test.local
 .env.production.local
 .env.local
+
+# local secrets
+secret
 
 # temp directories
 .temp
@@ -54,3 +63,6 @@ pids
 
 # Diagnostic reports
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Prisma generated client
+/generated/
