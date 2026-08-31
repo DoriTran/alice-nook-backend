@@ -16,29 +16,39 @@ describe('getAuthRuntimeConfig', () => {
     });
   });
 
-  it('includes Google only when both credentials are configured', () => {
+  it('disables Google in production when neither credential is configured', () => {
+    expect(
+      getAuthRuntimeConfig({ ...baseEnvironment, NODE_ENV: 'production' }),
+    ).toEqual({
+      baseURL: 'http://localhost:3000',
+      trustedOrigins: ['http://localhost:8888'],
+    });
+  });
+
+  it('enables Google in production when both credentials are configured', () => {
     expect(
       getAuthRuntimeConfig({
         ...baseEnvironment,
+        NODE_ENV: 'production',
         GOOGLE_CLIENT_ID: 'client-id',
         GOOGLE_CLIENT_SECRET: 'client-secret',
       }).google,
     ).toEqual({ clientId: 'client-id', clientSecret: 'client-secret' });
   });
 
-  it('rejects a partially configured Google provider', () => {
+  it.each([
+    { GOOGLE_CLIENT_ID: 'client-id' },
+    { GOOGLE_CLIENT_SECRET: 'client-secret' },
+  ])('rejects one Google credential in production', (googleEnvironment) => {
     expect(() =>
       getAuthRuntimeConfig({
         ...baseEnvironment,
-        GOOGLE_CLIENT_ID: 'client-id',
+        NODE_ENV: 'production',
+        ...googleEnvironment,
       }),
-    ).toThrow('must be configured together');
-  });
-
-  it('requires Google credentials in production', () => {
-    expect(() =>
-      getAuthRuntimeConfig({ ...baseEnvironment, NODE_ENV: 'production' }),
-    ).toThrow('required in production');
+    ).toThrow(
+      'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be configured together',
+    );
   });
 
   it.each([

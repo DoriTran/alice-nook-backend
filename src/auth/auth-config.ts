@@ -34,15 +34,6 @@ export function getAuthRuntimeConfig(
     );
   }
 
-  if (
-    environment.NODE_ENV === 'production' &&
-    (!googleClientId || !googleClientSecret)
-  ) {
-    throw new Error(
-      'GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET are required in production',
-    );
-  }
-
   return {
     baseURL,
     trustedOrigins: [frontendURL],
