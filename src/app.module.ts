@@ -4,6 +4,7 @@ import { AuthModule } from '@thallesp/nestjs-better-auth';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { createAuth } from './auth/create-auth';
+import { DiaryModule } from './diary/diary.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { PrismaService } from './prisma/prisma.service';
 
@@ -23,6 +24,7 @@ import { PrismaService } from './prisma/prisma.service';
         },
       }),
     }),
+    DiaryModule,
   ],
   controllers: [AppController],
   providers: [AppService],

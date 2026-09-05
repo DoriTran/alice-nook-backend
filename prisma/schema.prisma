@@ -22,6 +22,14 @@ model User {
   sessions      Session[]
   accounts      Account[]
 
+  diaryGroups         DiaryGroup[]
+  diaryChatboxes      DiaryChatbox[]
+  diaryMessages       DiaryMessage[]
+  diaryTags           DiaryTag[]
+  diaryMessageTags    DiaryMessageTag[]
+  diaryCustomPalettes DiaryCustomPalette[]
+  diaryOrder          DiaryOrder?
+
   @@unique([email])
   @@map("user")
 }
@@ -72,4 +80,121 @@ model Verification {
 
   @@index([identifier])
   @@map("verification")
+}
+
+model DiaryGroup {
+  id        String         @id
+  userId    String
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  icon      String
+  colorId   String
+  createdAt DateTime       @default(now())
+  updatedAt DateTime?
+  chatboxes DiaryChatbox[]
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("diary_group")
+}
+
+model DiaryChatbox {
+  id                  String         @id
+  userId              String
+  user                User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  groupId             String?
+  group               DiaryGroup?    @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  name                String
+  description         String
+  icon                String
+  colorId             String
+  pinned              Boolean        @default(false)
+  archived            Boolean        @default(false)
+  notificationEnabled Boolean        @default(false)
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime?
+  messages            DiaryMessage[]
+
+  @@index([userId])
+  @@index([groupId])
+  @@index([createdAt])
+  @@map("diary_chatbox")
+}
+
+model DiaryTag {
+  id          String            @id
+  userId      String
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label       String
+  colorId     String
+  messageTags DiaryMessageTag[]
+
+  @@index([userId])
+  @@map("diary_tag")
+}
+
+model DiaryMessage {
+  id               String            @id
+  userId           String
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chatboxId        String
+  chatbox          DiaryChatbox      @relation(fields: [chatboxId], references: [id], onDelete: Cascade)
+  variant          String
+  sender           String
+  content          Json
+  pinned           Boolean           @default(false)
+  archived         Boolean           @default(false)
+  replyToMessageId String?
+  sourceMessageId  String?
+  reactions        Json
+  attachments      Json
+  decorators       Json
+  edited           Boolean           @default(false)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime?
+  messageTags      DiaryMessageTag[]
+
+  @@index([userId])
+  @@index([chatboxId])
+  @@index([createdAt])
+  @@map("diary_message")
+}
+
+model DiaryMessageTag {
+  messageId String
+  tagId     String
+  userId    String
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  message   DiaryMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  tag       DiaryTag     @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([messageId, tagId])
+  @@index([userId])
+  @@index([tagId])
+  @@map("diary_message_tag")
+}
+
+model DiaryCustomPalette {
+  id          String   @id
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  baseColor   String
+  light       Json
+  dark        Json
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@map("diary_custom_palette")
+}
+
+model DiaryOrder {
+  userId               String @id
+  user                 User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  rootOrders           Json
+  groupChatboxOrders   Json
+  chatboxMessageOrders Json
+
+  @@map("diary_order")
 }
