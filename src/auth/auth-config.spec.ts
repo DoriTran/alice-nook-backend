@@ -58,6 +58,8 @@ describe('getAuthRuntimeConfig', () => {
     'FRONTEND_URL',
   ])('requires %s', (name) => {
     const environment = { ...baseEnvironment, [name]: '' };
-    expect(() => getAuthRuntimeConfig(environment)).toThrow(`${name} is required`);
+    expect(() => getAuthRuntimeConfig(environment)).toThrow(
+      `${name} is required`,
+    );
   });
 });
