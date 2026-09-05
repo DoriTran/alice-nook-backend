@@ -1,12 +1,12 @@
 import { ServiceUnavailableException } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
+import { DiaryDb, PrismaService } from '../prisma/prisma.service';
 import { mapPrismaDiaryWriteError } from './diary-prisma-errors';
 
 export const SERIALIZABLE_TX_MAX_ATTEMPTS = 3;
 
 export async function withSerializableTransaction<T>(
   prisma: PrismaService,
-  fn: (tx: PrismaService) => Promise<T>,
+  fn: (tx: DiaryDb) => Promise<T>,
   options: {
     isRetryable: (error: unknown) => boolean;
     message: string;
@@ -17,7 +17,7 @@ export async function withSerializableTransaction<T>(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      return await prisma.$transaction(fn, {
+      return await prisma.$transaction((tx) => fn(tx), {
         isolationLevel: 'Serializable',
       });
     } catch (error) {

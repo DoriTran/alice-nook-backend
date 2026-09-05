@@ -1,4 +1,4 @@
-import { PrismaService } from '../prisma/prisma.service';
+import { DiaryDb, PrismaService } from '../prisma/prisma.service';
 import { isPrismaKnownError } from './diary-prisma-errors';
 import {
   SERIALIZABLE_TX_MAX_ATTEMPTS,
@@ -11,7 +11,7 @@ export const DIARY_ORDER_RETRY_MESSAGE =
 
 export async function withDiaryOrderTransaction<T>(
   prisma: PrismaService,
-  fn: (tx: PrismaService) => Promise<T>,
+  fn: (tx: DiaryDb) => Promise<T>,
 ): Promise<T> {
   return withSerializableTransaction(prisma, fn, {
     isRetryable: isRetryableDiaryOrderConflict,

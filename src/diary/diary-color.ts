@@ -3,7 +3,7 @@ import {
   ConflictException,
   NotFoundException,
 } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
+import { DiaryDb, PrismaService } from '../prisma/prisma.service';
 import { isPrismaKnownError } from './diary-prisma-errors';
 import { withSerializableTransaction } from './diary-serializable-tx';
 import { PALETTE_ID_REGEX, PRESET_COLOR_IDS } from './dto/diary-constraints';
@@ -75,7 +75,7 @@ export function isRetryableColorConflict(error: unknown): boolean {
 
 export async function withDiaryColorTransaction<T>(
   prisma: PrismaService,
-  fn: (tx: PrismaService) => Promise<T>,
+  fn: (tx: DiaryDb) => Promise<T>,
 ): Promise<T> {
   return withSerializableTransaction(prisma, fn, {
     isRetryable: isRetryableColorConflict,
@@ -84,7 +84,7 @@ export async function withDiaryColorTransaction<T>(
 }
 
 export async function assertOwnedColorId(
-  db: Pick<PrismaService, 'diaryCustomPalette'>,
+  db: Pick<DiaryDb, 'diaryCustomPalette'>,
   userId: string,
   colorId: string,
 ): Promise<void> {
@@ -107,7 +107,7 @@ export async function assertOwnedColorId(
 }
 
 export async function assertPaletteUnused(
-  db: Pick<PrismaService, 'diaryGroup' | 'diaryChatbox' | 'diaryTag'>,
+  db: Pick<DiaryDb, 'diaryGroup' | 'diaryChatbox' | 'diaryTag'>,
   userId: string,
   paletteId: string,
 ): Promise<void> {

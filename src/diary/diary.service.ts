@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
+import { DiaryDb, PrismaService } from '../prisma/prisma.service';
 import {
   assertOwnedColorId,
   assertPaletteUnused,
@@ -44,8 +44,12 @@ import type { CreatePaletteDto } from './dto/create-palette.dto';
 import type { CreateTagDto } from './dto/create-tag.dto';
 import type {
   DiaryChatboxSnapshot,
+  DiaryGroupSnapshot,
+  DiaryMessageSnapshot,
   DiaryOrdersSnapshot,
+  DiaryPaletteSnapshot,
   DiarySnapshot,
+  DiaryTagSnapshot,
 } from './dto/diary-snapshot';
 import type { EditMessageDto } from './dto/edit-message.dto';
 import type { MoveChatboxDto } from './dto/move-chatbox.dto';
@@ -97,7 +101,10 @@ export class DiaryService {
     };
   }
 
-  async createGroup(userId: string, dto: CreateGroupDto) {
+  async createGroup(
+    userId: string,
+    dto: CreateGroupDto,
+  ): Promise<DiaryGroupSnapshot> {
     return withDiaryOrderTransaction(this.prisma, async (tx) => {
       await assertOwnedColorId(tx, userId, dto.colorId);
       const group = await tx.diaryGroup.create({
@@ -117,7 +124,11 @@ export class DiaryService {
     });
   }
 
-  async updateGroup(userId: string, id: string, dto: UpdateGroupDto) {
+  async updateGroup(
+    userId: string,
+    id: string,
+    dto: UpdateGroupDto,
+  ): Promise<DiaryGroupSnapshot> {
     return this.writeWithColorId(userId, dto.colorId, async (db) => {
       await this.requireOwnedGroup(db, userId, id);
 
@@ -155,7 +166,10 @@ export class DiaryService {
     });
   }
 
-  async createChatbox(userId: string, dto: CreateChatboxDto) {
+  async createChatbox(
+    userId: string,
+    dto: CreateChatboxDto,
+  ): Promise<DiaryChatboxSnapshot> {
     const groupId = dto.groupId ?? null;
 
     return withDiaryOrderTransaction(this.prisma, async (tx) => {
@@ -190,7 +204,11 @@ export class DiaryService {
     });
   }
 
-  async updateChatbox(userId: string, id: string, dto: UpdateChatboxDto) {
+  async updateChatbox(
+    userId: string,
+    id: string,
+    dto: UpdateChatboxDto,
+  ): Promise<DiaryChatboxSnapshot> {
     return this.writeWithColorId(userId, dto.colorId, async (db) => {
       await this.requireOwnedChatbox(db, userId, id);
 
@@ -220,7 +238,11 @@ export class DiaryService {
     });
   }
 
-  async moveChatbox(userId: string, id: string, dto: MoveChatboxDto) {
+  async moveChatbox(
+    userId: string,
+    id: string,
+    dto: MoveChatboxDto,
+  ): Promise<DiaryChatboxSnapshot> {
     const chatbox = await this.requireOwnedChatbox(this.prisma, userId, id);
 
     if (chatbox.groupId === dto.groupId) {
@@ -339,7 +361,10 @@ export class DiaryService {
     });
   }
 
-  async createMessage(userId: string, dto: CreateMessageDto) {
+  async createMessage(
+    userId: string,
+    dto: CreateMessageDto,
+  ): Promise<DiaryMessageSnapshot> {
     const tagIds = dto.tagIds ?? [];
 
     return withDiaryOrderTransaction(this.prisma, async (tx) => {
@@ -392,7 +417,11 @@ export class DiaryService {
     });
   }
 
-  async patchMessage(userId: string, id: string, dto: PatchMessageDto) {
+  async patchMessage(
+    userId: string,
+    id: string,
+    dto: PatchMessageDto,
+  ): Promise<DiaryMessageSnapshot> {
     const current = await this.requireOwnedMessage(this.prisma, userId, id);
 
     if (dto.content !== undefined && current.variant !== 'todo') {
@@ -427,7 +456,11 @@ export class DiaryService {
     }
   }
 
-  async editMessage(userId: string, id: string, dto: EditMessageDto) {
+  async editMessage(
+    userId: string,
+    id: string,
+    dto: EditMessageDto,
+  ): Promise<DiaryMessageSnapshot> {
     await this.requireOwnedMessage(this.prisma, userId, id);
     await this.requireLiveReply(this.prisma, userId, dto.replyToMessageId);
 
@@ -469,7 +502,11 @@ export class DiaryService {
     });
   }
 
-  async setMessageTags(userId: string, id: string, dto: SetMessageTagsDto) {
+  async setMessageTags(
+    userId: string,
+    id: string,
+    dto: SetMessageTagsDto,
+  ): Promise<DiaryMessageSnapshot> {
     return this.prisma.$transaction(async (tx) => {
       await this.requireOwnedMessage(tx, userId, id);
       await this.requireOwnedTags(tx, userId, dto.tagIds);
@@ -534,7 +571,10 @@ export class DiaryService {
     });
   }
 
-  async createTag(userId: string, dto: CreateTagDto) {
+  async createTag(
+    userId: string,
+    dto: CreateTagDto,
+  ): Promise<DiaryTagSnapshot> {
     await this.assertUniqueTagLabel(userId, dto.label);
 
     return this.writeWithColorId(userId, dto.colorId, async (db) => {
@@ -555,7 +595,11 @@ export class DiaryService {
     });
   }
 
-  async updateTag(userId: string, id: string, dto: UpdateTagDto) {
+  async updateTag(
+    userId: string,
+    id: string,
+    dto: UpdateTagDto,
+  ): Promise<DiaryTagSnapshot> {
     return this.writeWithColorId(userId, dto.colorId, async (db) => {
       await this.requireOwnedTag(db, userId, id);
 
@@ -589,7 +633,10 @@ export class DiaryService {
     }
   }
 
-  async createPalette(userId: string, dto: CreatePaletteDto) {
+  async createPalette(
+    userId: string,
+    dto: CreatePaletteDto,
+  ): Promise<DiaryPaletteSnapshot> {
     const baseColor = parseDiaryHex(dto.baseColor);
     if (!baseColor) {
       throw new BadRequestException('Invalid palette color');
@@ -632,7 +679,7 @@ export class DiaryService {
   private async writeWithColorId<T>(
     userId: string,
     colorId: string | undefined,
-    write: (db: PrismaService) => Promise<T>,
+    write: (db: DiaryDb) => Promise<T>,
   ): Promise<T> {
     if (colorId !== undefined && isCustomColorId(colorId)) {
       return withDiaryColorTransaction(this.prisma, async (tx) => {
@@ -649,7 +696,7 @@ export class DiaryService {
   }
 
   private async requireOwnedMessage(
-    db: Pick<PrismaService, 'diaryMessage'>,
+    db: Pick<DiaryDb, 'diaryMessage'>,
     userId: string,
     id: string,
   ) {
@@ -666,7 +713,7 @@ export class DiaryService {
   }
 
   private async requireOwnedTags(
-    db: Pick<PrismaService, 'diaryTag'>,
+    db: Pick<DiaryDb, 'diaryTag'>,
     userId: string,
     tagIds: string[],
   ) {
@@ -685,7 +732,7 @@ export class DiaryService {
   }
 
   private async requireLiveReply(
-    db: Pick<PrismaService, 'diaryMessage'>,
+    db: Pick<DiaryDb, 'diaryMessage'>,
     userId: string,
     replyToMessageId?: string | null,
   ) {
@@ -703,7 +750,7 @@ export class DiaryService {
   }
 
   private async requireSourceLineage(
-    db: Pick<PrismaService, 'diaryMessage'>,
+    db: Pick<DiaryDb, 'diaryMessage'>,
     userId: string,
     sourceMessageId?: string | null,
   ) {
@@ -720,11 +767,7 @@ export class DiaryService {
     }
   }
 
-  private async requireOwnedGroup(
-    db: PrismaService,
-    userId: string,
-    id: string,
-  ) {
+  private async requireOwnedGroup(db: DiaryDb, userId: string, id: string) {
     const group = await db.diaryGroup.findFirst({
       where: { id, userId },
     });
@@ -736,11 +779,7 @@ export class DiaryService {
     return group;
   }
 
-  private async requireOwnedChatbox(
-    db: PrismaService,
-    userId: string,
-    id: string,
-  ) {
+  private async requireOwnedChatbox(db: DiaryDb, userId: string, id: string) {
     const chatbox = await db.diaryChatbox.findFirst({
       where: { id, userId },
     });
@@ -753,7 +792,7 @@ export class DiaryService {
   }
 
   private async requireOwnedTag(
-    db: Pick<PrismaService, 'diaryTag'>,
+    db: Pick<DiaryDb, 'diaryTag'>,
     userId: string,
     id: string,
   ) {
@@ -787,7 +826,7 @@ export class DiaryService {
   }
 
   private async loadOrders(
-    tx: PrismaService,
+    tx: DiaryDb,
     userId: string,
   ): Promise<DiaryOrdersSnapshot> {
     const orderRow = await tx.diaryOrder.findUnique({ where: { userId } });
@@ -795,7 +834,7 @@ export class DiaryService {
   }
 
   private async saveOrders(
-    tx: PrismaService,
+    tx: DiaryDb,
     userId: string,
     orders: DiaryOrdersSnapshot,
   ) {
@@ -816,7 +855,7 @@ export class DiaryService {
   }
 
   private async toChatboxSnapshot(
-    db: PrismaService,
+    db: DiaryDb,
     userId: string,
     chatbox: DiaryChatboxRow,
   ): Promise<DiaryChatboxSnapshot> {
