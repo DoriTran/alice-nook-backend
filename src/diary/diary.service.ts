@@ -1,37 +1,65 @@
-import { Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  assertOwnedColorId,
+  assertPaletteUnused,
+  isCustomColorId,
+  normalizePaletteShades,
+  parseDiaryHex,
+  withDiaryColorTransaction,
+} from './diary-color';
+import { withDiaryOrderTransaction } from './diary-order-tx';
+import { mapPrismaDiaryWriteError } from './diary-prisma-errors';
+import {
+  appendChatbox,
+  appendGroup,
+  appendMessage,
+  applySidebarLayout,
+  assertValidSidebarLayout,
+  deleteChatboxOrders,
+  deleteGroupOrders,
+  deleteMessageOrders,
+  InvalidSidebarLayoutError,
+  moveChatboxOrders,
+} from './diary-orders';
+import {
+  mapChatbox,
+  mapGroup,
+  mapMessage,
+  mapOrders,
+  mapPalette,
+  mapTag,
+  type DiaryChatboxRow,
+  type DiaryMessageRow,
+} from './diary.mapper';
+import type { CreateChatboxDto } from './dto/create-chatbox.dto';
+import type { CreateGroupDto } from './dto/create-group.dto';
+import type { CreateMessageDto } from './dto/create-message.dto';
+import type { CreatePaletteDto } from './dto/create-palette.dto';
+import type { CreateTagDto } from './dto/create-tag.dto';
 import type {
   DiaryChatboxSnapshot,
-  DiaryChatboxTagStatistic,
-  DiaryMessageSnapshot,
   DiaryOrdersSnapshot,
   DiarySnapshot,
 } from './dto/diary-snapshot';
+import type { EditMessageDto } from './dto/edit-message.dto';
+import type { MoveChatboxDto } from './dto/move-chatbox.dto';
+import type { PatchMessageDto } from './dto/patch-message.dto';
+import type { RemoveChatboxTagDto } from './dto/remove-chatbox-tag.dto';
+import type { SetMessageTagsDto } from './dto/set-message-tags.dto';
+import type { SyncSidebarLayoutDto } from './dto/sync-sidebar-layout.dto';
+import type { UpdateChatboxDto } from './dto/update-chatbox.dto';
+import type { UpdateGroupDto } from './dto/update-group.dto';
+import type { UpdateTagDto } from './dto/update-tag.dto';
 
-const EMPTY_ORDERS: DiaryOrdersSnapshot = {
-  rootOrders: [],
-  groupChatboxOrders: {},
-  chatboxMessageOrders: {},
-};
-
-type MessageRow = {
-  id: string;
-  chatboxId: string;
-  sender: string;
-  variant: string;
-  content: unknown;
-  pinned: boolean;
-  archived: boolean;
-  replyToMessageId: string | null;
-  sourceMessageId: string | null;
-  reactions: unknown;
-  attachments: unknown;
-  decorators: unknown;
-  edited: boolean;
-  createdAt: Date;
-  updatedAt: Date | null;
-  messageTags: { tagId: string }[];
-};
+const MESSAGE_TAG_INCLUDE = {
+  messageTags: { select: { tagId: true } },
+} as const;
 
 @Injectable()
 export class DiaryService {
@@ -44,219 +72,774 @@ export class DiaryService {
         this.prisma.diaryChatbox.findMany({ where: { userId } }),
         this.prisma.diaryMessage.findMany({
           where: { userId },
-          include: { messageTags: { select: { tagId: true } } },
+          include: MESSAGE_TAG_INCLUDE,
         }),
         this.prisma.diaryTag.findMany({ where: { userId } }),
         this.prisma.diaryCustomPalette.findMany({ where: { userId } }),
         this.prisma.diaryOrder.findUnique({ where: { userId } }),
       ]);
 
-    const mappedMessages = messages.map((message) => this.mapMessage(message));
+    const mappedMessages = messages.map((message) => mapMessage(message));
     const messagesById = new Map(
       mappedMessages.map((message) => [message.id, message]),
     );
-    const orders = this.mapOrders(orderRow);
+    const orders = mapOrders(orderRow);
 
     return {
-      groups: groups.map((group) => ({
-        id: group.id,
-        name: group.name,
-        icon: group.icon,
-        colorId: group.colorId,
-        createdAt: group.createdAt.toISOString(),
-        updatedAt: toIso(group.updatedAt),
-      })),
+      groups: groups.map((group) => mapGroup(group)),
       chatboxes: chatboxes.map((chatbox) =>
-        this.mapChatbox(chatbox, mappedMessages, messagesById, orders),
+        mapChatbox(chatbox, mappedMessages, messagesById, orders),
       ),
       messages: mappedMessages,
-      tags: tags.map((tag) => ({
-        id: tag.id,
-        label: tag.label,
-        colorId: tag.colorId,
-      })),
-      palettes: palettes.map((palette) => ({
-        id: palette.id,
-        name: palette.name,
-        ...(palette.description != null && palette.description !== ''
-          ? { description: palette.description }
-          : {}),
-        baseColor: palette.baseColor,
-        light: palette.light,
-        dark: palette.dark,
-        createdAt: palette.createdAt.toISOString(),
-      })),
+      tags: tags.map((tag) => mapTag(tag)),
+      palettes: palettes.map((palette) => mapPalette(palette)),
       orders,
     };
   }
 
-  private mapOrders(
-    orderRow: {
-      rootOrders: unknown;
-      groupChatboxOrders: unknown;
-      chatboxMessageOrders: unknown;
-    } | null,
-  ): DiaryOrdersSnapshot {
-    if (!orderRow) {
-      return {
-        rootOrders: [...EMPTY_ORDERS.rootOrders],
-        groupChatboxOrders: {},
-        chatboxMessageOrders: {},
-      };
+  async createGroup(userId: string, dto: CreateGroupDto) {
+    return withDiaryOrderTransaction(this.prisma, async (tx) => {
+      await assertOwnedColorId(tx, userId, dto.colorId);
+      const group = await tx.diaryGroup.create({
+        data: {
+          id: dto.id,
+          userId,
+          name: dto.name,
+          icon: dto.icon ?? '',
+          colorId: dto.colorId,
+          updatedAt: null,
+        },
+      });
+
+      const orders = await this.loadOrders(tx, userId);
+      await this.saveOrders(tx, userId, appendGroup(orders, group.id));
+      return mapGroup(group);
+    });
+  }
+
+  async updateGroup(userId: string, id: string, dto: UpdateGroupDto) {
+    return this.writeWithColorId(userId, dto.colorId, async (db) => {
+      await this.requireOwnedGroup(db, userId, id);
+
+      try {
+        const group = await db.diaryGroup.update({
+          where: { id },
+          data: {
+            ...(dto.name !== undefined ? { name: dto.name } : {}),
+            ...(dto.icon !== undefined ? { icon: dto.icon } : {}),
+            ...(dto.colorId !== undefined ? { colorId: dto.colorId } : {}),
+            updatedAt: new Date(),
+          },
+        });
+
+        return mapGroup(group);
+      } catch (error) {
+        return mapPrismaDiaryWriteError(error);
+      }
+    });
+  }
+
+  async deleteGroup(userId: string, id: string): Promise<void> {
+    await withDiaryOrderTransaction(this.prisma, async (tx) => {
+      await this.requireOwnedGroup(tx, userId, id);
+      const orders = await this.loadOrders(tx, userId);
+      const children = await tx.diaryChatbox.findMany({
+        where: { userId, groupId: id },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        select: { id: true, createdAt: true },
+      });
+      const next = deleteGroupOrders(orders, id, children);
+
+      await tx.diaryGroup.delete({ where: { id } });
+      await this.saveOrders(tx, userId, next);
+    });
+  }
+
+  async createChatbox(userId: string, dto: CreateChatboxDto) {
+    const groupId = dto.groupId ?? null;
+
+    return withDiaryOrderTransaction(this.prisma, async (tx) => {
+      if (groupId) {
+        await this.requireOwnedGroup(tx, userId, groupId);
+      }
+      await assertOwnedColorId(tx, userId, dto.colorId);
+
+      const chatbox = await tx.diaryChatbox.create({
+        data: {
+          id: dto.id,
+          userId,
+          groupId,
+          name: dto.name,
+          description: dto.description ?? '',
+          icon: dto.icon ?? '',
+          colorId: dto.colorId,
+          pinned: false,
+          archived: false,
+          notificationEnabled: false,
+          updatedAt: null,
+        },
+      });
+
+      const orders = await this.loadOrders(tx, userId);
+      await this.saveOrders(
+        tx,
+        userId,
+        appendChatbox(orders, chatbox.id, groupId),
+      );
+      return this.toChatboxSnapshot(tx, userId, chatbox);
+    });
+  }
+
+  async updateChatbox(userId: string, id: string, dto: UpdateChatboxDto) {
+    return this.writeWithColorId(userId, dto.colorId, async (db) => {
+      await this.requireOwnedChatbox(db, userId, id);
+
+      try {
+        const chatbox = await db.diaryChatbox.update({
+          where: { id },
+          data: {
+            ...(dto.name !== undefined ? { name: dto.name } : {}),
+            ...(dto.description !== undefined
+              ? { description: dto.description }
+              : {}),
+            ...(dto.icon !== undefined ? { icon: dto.icon } : {}),
+            ...(dto.colorId !== undefined ? { colorId: dto.colorId } : {}),
+            ...(dto.pinned !== undefined ? { pinned: dto.pinned } : {}),
+            ...(dto.archived !== undefined ? { archived: dto.archived } : {}),
+            ...(dto.notificationEnabled !== undefined
+              ? { notificationEnabled: dto.notificationEnabled }
+              : {}),
+            updatedAt: new Date(),
+          },
+        });
+
+        return this.toChatboxSnapshot(db, userId, chatbox);
+      } catch (error) {
+        return mapPrismaDiaryWriteError(error);
+      }
+    });
+  }
+
+  async moveChatbox(userId: string, id: string, dto: MoveChatboxDto) {
+    const chatbox = await this.requireOwnedChatbox(this.prisma, userId, id);
+
+    if (chatbox.groupId === dto.groupId) {
+      return this.toChatboxSnapshot(this.prisma, userId, chatbox);
     }
 
-    return {
-      rootOrders: asStringArray(orderRow.rootOrders),
-      groupChatboxOrders: asStringArrayMap(orderRow.groupChatboxOrders),
-      chatboxMessageOrders: asStringArrayMap(orderRow.chatboxMessageOrders),
-    };
+    return withDiaryOrderTransaction(this.prisma, async (tx) => {
+      const current = await this.requireOwnedChatbox(tx, userId, id);
+
+      if (current.groupId === dto.groupId) {
+        return this.toChatboxSnapshot(tx, userId, current);
+      }
+
+      if (dto.groupId) {
+        await this.requireOwnedGroup(tx, userId, dto.groupId);
+      }
+
+      const updated = await tx.diaryChatbox.update({
+        where: { id },
+        data: {
+          groupId: dto.groupId,
+          updatedAt: new Date(),
+        },
+      });
+
+      const orders = await this.loadOrders(tx, userId);
+      await this.saveOrders(
+        tx,
+        userId,
+        moveChatboxOrders(orders, id, current.groupId, dto.groupId),
+      );
+      return this.toChatboxSnapshot(tx, userId, updated);
+    });
   }
 
-  private mapMessage(message: MessageRow): DiaryMessageSnapshot {
-    return {
-      id: message.id,
-      chatboxId: message.chatboxId,
-      sender: message.sender,
-      variant: message.variant,
-      content: message.content,
-      tagIds: message.messageTags.map((join) => join.tagId),
-      pinned: message.pinned,
-      archived: message.archived,
-      replyToMessageId: message.replyToMessageId,
-      sourceMessageId: message.sourceMessageId,
-      reactions: asJsonArray(message.reactions),
-      edited: message.edited,
-      attachments: asJsonArray(message.attachments),
-      decorators: asJsonArray(message.decorators),
-      createdAt: message.createdAt.toISOString(),
-      updatedAt: toIso(message.updatedAt),
-    };
+  async deleteChatbox(userId: string, id: string): Promise<void> {
+    await withDiaryOrderTransaction(this.prisma, async (tx) => {
+      const chatbox = await this.requireOwnedChatbox(tx, userId, id);
+      const orders = await this.loadOrders(tx, userId);
+      const next = deleteChatboxOrders(orders, id, chatbox.groupId);
+
+      await tx.diaryChatbox.delete({ where: { id } });
+      await this.saveOrders(tx, userId, next);
+    });
   }
 
-  private mapChatbox(
-    chatbox: {
-      id: string;
-      groupId: string | null;
-      name: string;
-      description: string;
-      icon: string;
-      colorId: string;
-      pinned: boolean;
-      archived: boolean;
-      notificationEnabled: boolean;
-      createdAt: Date;
-      updatedAt: Date | null;
-    },
-    messages: DiaryMessageSnapshot[],
-    messagesById: Map<string, DiaryMessageSnapshot>,
-    orders: DiaryOrdersSnapshot,
-  ): DiaryChatboxSnapshot {
-    const derived = deriveChatboxFields(
-      chatbox.id,
-      messages,
-      messagesById,
-      orders,
-    );
+  async syncSidebarLayout(
+    userId: string,
+    dto: SyncSidebarLayoutDto,
+  ): Promise<DiaryOrdersSnapshot> {
+    return withDiaryOrderTransaction(this.prisma, async (tx) => {
+      const [groups, chatboxes, orders] = await Promise.all([
+        tx.diaryGroup.findMany({
+          where: { userId },
+          select: { id: true },
+        }),
+        tx.diaryChatbox.findMany({
+          where: { userId },
+          select: { id: true, groupId: true },
+        }),
+        this.loadOrders(tx, userId),
+      ]);
 
-    return {
-      id: chatbox.id,
-      groupId: chatbox.groupId,
-      name: chatbox.name,
-      description: chatbox.description,
-      icon: chatbox.icon,
-      colorId: chatbox.colorId,
-      pinned: chatbox.pinned,
-      archived: chatbox.archived,
-      hasUnread: false,
-      notificationEnabled: chatbox.notificationEnabled,
-      tags: derived.tags,
-      totalMessage: derived.totalMessage,
-      lastMessageId: derived.lastMessageId,
-      lastMessageAt: derived.lastMessageAt,
-      createdAt: chatbox.createdAt.toISOString(),
-      updatedAt: toIso(chatbox.updatedAt),
-    };
+      try {
+        assertValidSidebarLayout(
+          dto,
+          new Set(groups.map((group) => group.id)),
+          new Set(chatboxes.map((chatbox) => chatbox.id)),
+        );
+      } catch (error) {
+        if (error instanceof InvalidSidebarLayoutError) {
+          throw new BadRequestException(error.message);
+        }
+
+        throw error;
+      }
+
+      const next = applySidebarLayout(orders, dto);
+      const chatboxById = new Map(
+        chatboxes.map((chatbox) => [chatbox.id, chatbox]),
+      );
+      const groupedChatboxIds = new Set(
+        Object.values(dto.groupChatboxOrders).flat(),
+      );
+
+      for (const id of dto.rootOrders) {
+        const chatbox = chatboxById.get(id);
+        if (!chatbox || groupedChatboxIds.has(id) || chatbox.groupId === null) {
+          continue;
+        }
+
+        await tx.diaryChatbox.update({
+          where: { id },
+          data: { groupId: null, updatedAt: new Date() },
+        });
+      }
+
+      for (const [groupId, chatboxIds] of Object.entries(
+        dto.groupChatboxOrders,
+      )) {
+        for (const chatboxId of chatboxIds) {
+          const chatbox = chatboxById.get(chatboxId);
+          if (!chatbox || chatbox.groupId === groupId) {
+            continue;
+          }
+
+          await tx.diaryChatbox.update({
+            where: { id: chatboxId },
+            data: { groupId, updatedAt: new Date() },
+          });
+        }
+      }
+
+      await this.saveOrders(tx, userId, next);
+      return next;
+    });
   }
-}
 
-function deriveChatboxFields(
-  chatboxId: string,
-  messages: DiaryMessageSnapshot[],
-  messagesById: Map<string, DiaryMessageSnapshot>,
-  orders: DiaryOrdersSnapshot,
-): {
-  totalMessage: number;
-  lastMessageId: string | null;
-  lastMessageAt: string | null;
-  tags: DiaryChatboxTagStatistic[];
-} {
-  const orderedIds = orders.chatboxMessageOrders[chatboxId];
-  const messageIds =
-    orderedIds ??
-    messages
-      .filter((message) => message.chatboxId === chatboxId)
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-      .map((message) => message.id);
+  async createMessage(userId: string, dto: CreateMessageDto) {
+    const tagIds = dto.tagIds ?? [];
 
-  const totalMessage = messageIds.length;
-  const lastMessageId = messageIds.at(-1) ?? null;
-  const lastMessageAt = lastMessageId
-    ? (messagesById.get(lastMessageId)?.createdAt ?? null)
-    : null;
+    return withDiaryOrderTransaction(this.prisma, async (tx) => {
+      await this.requireOwnedChatbox(tx, userId, dto.chatboxId);
+      await this.requireOwnedTags(tx, userId, tagIds);
+      await this.requireLiveReply(tx, userId, dto.replyToMessageId);
+      await this.requireSourceLineage(tx, userId, dto.sourceMessageId);
 
-  const counts = new Map<string, number>();
+      const message = await tx.diaryMessage.create({
+        data: {
+          id: dto.id,
+          userId,
+          chatboxId: dto.chatboxId,
+          sender: dto.sender,
+          variant: dto.variant,
+          content: dto.content as object,
+          pinned: dto.pinned ?? false,
+          archived: dto.archived ?? false,
+          replyToMessageId: dto.replyToMessageId ?? null,
+          sourceMessageId: dto.sourceMessageId ?? null,
+          reactions: dto.reactions ?? [],
+          attachments: dto.attachments ?? [],
+          decorators: dto.decorators ?? [],
+          edited: false,
+          updatedAt: null,
+        },
+      });
 
-  for (const messageId of messageIds) {
-    const message = messagesById.get(messageId);
+      if (tagIds.length > 0) {
+        await tx.diaryMessageTag.createMany({
+          data: tagIds.map((tagId) => ({
+            messageId: message.id,
+            tagId,
+            userId,
+          })),
+        });
+      }
+
+      const orders = await this.loadOrders(tx, userId);
+      await this.saveOrders(
+        tx,
+        userId,
+        appendMessage(orders, dto.chatboxId, message.id),
+      );
+
+      return mapMessage({
+        ...message,
+        messageTags: tagIds.map((tagId) => ({ tagId })),
+      });
+    });
+  }
+
+  async patchMessage(userId: string, id: string, dto: PatchMessageDto) {
+    const current = await this.requireOwnedMessage(this.prisma, userId, id);
+
+    if (dto.content !== undefined && current.variant !== 'todo') {
+      throw new BadRequestException(
+        'PATCH content is only allowed on todo messages',
+      );
+    }
+
+    try {
+      const message = await this.prisma.diaryMessage.update({
+        where: { id },
+        data: {
+          ...(dto.pinned !== undefined ? { pinned: dto.pinned } : {}),
+          ...(dto.archived !== undefined ? { archived: dto.archived } : {}),
+          ...(dto.reactions !== undefined
+            ? { reactions: dto.reactions as object }
+            : {}),
+          ...(dto.decorators !== undefined
+            ? { decorators: dto.decorators as object }
+            : {}),
+          ...(dto.content !== undefined
+            ? { content: dto.content as object }
+            : {}),
+          updatedAt: new Date(),
+        },
+        include: MESSAGE_TAG_INCLUDE,
+      });
+
+      return mapMessage(message);
+    } catch (error) {
+      return mapPrismaDiaryWriteError(error);
+    }
+  }
+
+  async editMessage(userId: string, id: string, dto: EditMessageDto) {
+    await this.requireOwnedMessage(this.prisma, userId, id);
+    await this.requireLiveReply(this.prisma, userId, dto.replyToMessageId);
+
+    try {
+      const message = await this.prisma.diaryMessage.update({
+        where: { id },
+        data: {
+          variant: dto.variant,
+          content: dto.content as object,
+          ...(dto.attachments !== undefined
+            ? { attachments: dto.attachments as object }
+            : {}),
+          ...(dto.decorators !== undefined
+            ? { decorators: dto.decorators as object }
+            : {}),
+          ...(dto.replyToMessageId !== undefined
+            ? { replyToMessageId: dto.replyToMessageId }
+            : {}),
+          edited: true,
+          updatedAt: new Date(),
+        },
+        include: MESSAGE_TAG_INCLUDE,
+      });
+
+      return mapMessage(message);
+    } catch (error) {
+      return mapPrismaDiaryWriteError(error);
+    }
+  }
+
+  async deleteMessage(userId: string, id: string): Promise<void> {
+    await withDiaryOrderTransaction(this.prisma, async (tx) => {
+      const message = await this.requireOwnedMessage(tx, userId, id);
+      const orders = await this.loadOrders(tx, userId);
+      const next = deleteMessageOrders(orders, message.chatboxId, id);
+
+      await tx.diaryMessage.delete({ where: { id } });
+      await this.saveOrders(tx, userId, next);
+    });
+  }
+
+  async setMessageTags(userId: string, id: string, dto: SetMessageTagsDto) {
+    return this.prisma.$transaction(async (tx) => {
+      await this.requireOwnedMessage(tx, userId, id);
+      await this.requireOwnedTags(tx, userId, dto.tagIds);
+
+      await tx.diaryMessageTag.deleteMany({ where: { messageId: id } });
+
+      if (dto.tagIds.length > 0) {
+        await tx.diaryMessageTag.createMany({
+          data: dto.tagIds.map((tagId) => ({
+            messageId: id,
+            tagId,
+            userId,
+          })),
+        });
+      }
+
+      const message = await tx.diaryMessage.update({
+        where: { id },
+        data: { updatedAt: new Date() },
+        include: MESSAGE_TAG_INCLUDE,
+      });
+
+      return mapMessage({
+        ...message,
+        messageTags: dto.tagIds.map((tagId) => ({ tagId })),
+      });
+    });
+  }
+
+  async removeTagFromChatbox(
+    userId: string,
+    chatboxId: string,
+    dto: RemoveChatboxTagDto,
+  ): Promise<void> {
+    await this.requireOwnedChatbox(this.prisma, userId, chatboxId);
+    await this.requireOwnedTag(this.prisma, userId, dto.tagId);
+
+    await this.prisma.$transaction(async (tx) => {
+      const joins = await tx.diaryMessageTag.findMany({
+        where: {
+          tagId: dto.tagId,
+          userId,
+          message: { chatboxId, userId },
+        },
+        select: { messageId: true },
+      });
+      const messageIds = Array.from(
+        new Set(joins.map((join) => join.messageId)),
+      );
+
+      if (messageIds.length === 0) {
+        return;
+      }
+
+      await tx.diaryMessageTag.deleteMany({
+        where: { tagId: dto.tagId, messageId: { in: messageIds } },
+      });
+      await tx.diaryMessage.updateMany({
+        where: { id: { in: messageIds }, userId },
+        data: { updatedAt: new Date() },
+      });
+    });
+  }
+
+  async createTag(userId: string, dto: CreateTagDto) {
+    await this.assertUniqueTagLabel(userId, dto.label);
+
+    return this.writeWithColorId(userId, dto.colorId, async (db) => {
+      try {
+        const tag = await db.diaryTag.create({
+          data: {
+            id: dto.id,
+            userId,
+            label: dto.label,
+            colorId: dto.colorId,
+          },
+        });
+
+        return mapTag(tag);
+      } catch (error) {
+        return mapPrismaDiaryWriteError(error);
+      }
+    });
+  }
+
+  async updateTag(userId: string, id: string, dto: UpdateTagDto) {
+    return this.writeWithColorId(userId, dto.colorId, async (db) => {
+      await this.requireOwnedTag(db, userId, id);
+
+      if (dto.label !== undefined) {
+        await this.assertUniqueTagLabel(userId, dto.label, id);
+      }
+
+      try {
+        const tag = await db.diaryTag.update({
+          where: { id },
+          data: {
+            ...(dto.label !== undefined ? { label: dto.label } : {}),
+            ...(dto.colorId !== undefined ? { colorId: dto.colorId } : {}),
+          },
+        });
+
+        return mapTag(tag);
+      } catch (error) {
+        return mapPrismaDiaryWriteError(error);
+      }
+    });
+  }
+
+  async deleteTag(userId: string, id: string): Promise<void> {
+    await this.requireOwnedTag(this.prisma, userId, id);
+
+    try {
+      await this.prisma.diaryTag.delete({ where: { id } });
+    } catch (error) {
+      return mapPrismaDiaryWriteError(error);
+    }
+  }
+
+  async createPalette(userId: string, dto: CreatePaletteDto) {
+    const baseColor = parseDiaryHex(dto.baseColor);
+    if (!baseColor) {
+      throw new BadRequestException('Invalid palette color');
+    }
+
+    try {
+      const palette = await this.prisma.diaryCustomPalette.create({
+        data: {
+          id: dto.id,
+          userId,
+          name: dto.name,
+          description: dto.description?.trim() ? dto.description.trim() : null,
+          baseColor,
+          light: normalizePaletteShades(dto.light),
+          dark: normalizePaletteShades(dto.dark),
+        },
+      });
+
+      return mapPalette(palette);
+    } catch (error) {
+      return mapPrismaDiaryWriteError(error);
+    }
+  }
+
+  async deletePalette(userId: string, id: string): Promise<void> {
+    await withDiaryColorTransaction(this.prisma, async (tx) => {
+      const palette = await tx.diaryCustomPalette.findFirst({
+        where: { id, userId },
+      });
+
+      if (!palette) {
+        throw new NotFoundException();
+      }
+
+      await assertPaletteUnused(tx, userId, id);
+      await tx.diaryCustomPalette.delete({ where: { id } });
+    });
+  }
+
+  private async writeWithColorId<T>(
+    userId: string,
+    colorId: string | undefined,
+    write: (db: PrismaService) => Promise<T>,
+  ): Promise<T> {
+    if (colorId !== undefined && isCustomColorId(colorId)) {
+      return withDiaryColorTransaction(this.prisma, async (tx) => {
+        await assertOwnedColorId(tx, userId, colorId);
+        return write(tx);
+      });
+    }
+
+    if (colorId !== undefined) {
+      await assertOwnedColorId(this.prisma, userId, colorId);
+    }
+
+    return write(this.prisma);
+  }
+
+  private async requireOwnedMessage(
+    db: Pick<PrismaService, 'diaryMessage'>,
+    userId: string,
+    id: string,
+  ) {
+    const message = await db.diaryMessage.findFirst({
+      where: { id, userId },
+      include: MESSAGE_TAG_INCLUDE,
+    });
 
     if (!message) {
-      continue;
+      throw new NotFoundException();
     }
 
-    for (const tagId of message.tagIds) {
-      counts.set(tagId, (counts.get(tagId) ?? 0) + 1);
+    return message;
+  }
+
+  private async requireOwnedTags(
+    db: Pick<PrismaService, 'diaryTag'>,
+    userId: string,
+    tagIds: string[],
+  ) {
+    if (tagIds.length === 0) {
+      return;
+    }
+
+    const tags = await db.diaryTag.findMany({
+      where: { userId, id: { in: tagIds } },
+      select: { id: true },
+    });
+
+    if (tags.length !== new Set(tagIds).size) {
+      throw new NotFoundException();
     }
   }
 
-  const tags = Array.from(counts.entries()).map(([tagId, count]) => ({
-    tagId,
-    count,
-  }));
+  private async requireLiveReply(
+    db: Pick<PrismaService, 'diaryMessage'>,
+    userId: string,
+    replyToMessageId?: string | null,
+  ) {
+    if (!replyToMessageId) {
+      return;
+    }
 
-  return {
-    totalMessage,
-    lastMessageId,
-    lastMessageAt,
-    tags,
-  };
-}
+    const reply = await db.diaryMessage.findFirst({
+      where: { id: replyToMessageId, userId },
+    });
 
-function toIso(value: Date | null): string | null {
-  return value ? value.toISOString() : null;
-}
-
-function asJsonArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
-}
-
-function asStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return [];
+    if (!reply) {
+      throw new NotFoundException();
+    }
   }
 
-  return value.filter((item): item is string => typeof item === 'string');
-}
+  private async requireSourceLineage(
+    db: Pick<PrismaService, 'diaryMessage'>,
+    userId: string,
+    sourceMessageId?: string | null,
+  ) {
+    if (!sourceMessageId) {
+      return;
+    }
 
-function asStringArrayMap(value: unknown): Record<string, string[]> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return {};
+    const source = await db.diaryMessage.findUnique({
+      where: { id: sourceMessageId },
+    });
+
+    if (source && source.userId !== userId) {
+      throw new NotFoundException();
+    }
   }
 
-  const result: Record<string, string[]> = {};
+  private async requireOwnedGroup(
+    db: PrismaService,
+    userId: string,
+    id: string,
+  ) {
+    const group = await db.diaryGroup.findFirst({
+      where: { id, userId },
+    });
 
-  for (const [key, ids] of Object.entries(value)) {
-    result[key] = asStringArray(ids);
+    if (!group) {
+      throw new NotFoundException();
+    }
+
+    return group;
   }
 
-  return result;
+  private async requireOwnedChatbox(
+    db: PrismaService,
+    userId: string,
+    id: string,
+  ) {
+    const chatbox = await db.diaryChatbox.findFirst({
+      where: { id, userId },
+    });
+
+    if (!chatbox) {
+      throw new NotFoundException();
+    }
+
+    return chatbox;
+  }
+
+  private async requireOwnedTag(
+    db: Pick<PrismaService, 'diaryTag'>,
+    userId: string,
+    id: string,
+  ) {
+    const tag = await db.diaryTag.findFirst({
+      where: { id, userId },
+    });
+
+    if (!tag) {
+      throw new NotFoundException();
+    }
+
+    return tag;
+  }
+
+  private async assertUniqueTagLabel(
+    userId: string,
+    label: string,
+    excludeId?: string,
+  ) {
+    const duplicate = await this.prisma.diaryTag.findFirst({
+      where: {
+        userId,
+        label: { equals: label, mode: 'insensitive' },
+        ...(excludeId ? { NOT: { id: excludeId } } : {}),
+      },
+    });
+
+    if (duplicate) {
+      throw new ConflictException('A tag with this name already exists');
+    }
+  }
+
+  private async loadOrders(
+    tx: PrismaService,
+    userId: string,
+  ): Promise<DiaryOrdersSnapshot> {
+    const orderRow = await tx.diaryOrder.findUnique({ where: { userId } });
+    return mapOrders(orderRow);
+  }
+
+  private async saveOrders(
+    tx: PrismaService,
+    userId: string,
+    orders: DiaryOrdersSnapshot,
+  ) {
+    await tx.diaryOrder.upsert({
+      where: { userId },
+      create: {
+        userId,
+        rootOrders: orders.rootOrders,
+        groupChatboxOrders: orders.groupChatboxOrders,
+        chatboxMessageOrders: orders.chatboxMessageOrders,
+      },
+      update: {
+        rootOrders: orders.rootOrders,
+        groupChatboxOrders: orders.groupChatboxOrders,
+        chatboxMessageOrders: orders.chatboxMessageOrders,
+      },
+    });
+  }
+
+  private async toChatboxSnapshot(
+    db: PrismaService,
+    userId: string,
+    chatbox: DiaryChatboxRow,
+  ): Promise<DiaryChatboxSnapshot> {
+    const [messages, orderRow] = await Promise.all([
+      db.diaryMessage.findMany({
+        where: { userId, chatboxId: chatbox.id },
+        include: MESSAGE_TAG_INCLUDE,
+      }),
+      db.diaryOrder.findUnique({ where: { userId } }),
+    ]);
+
+    const mappedMessages = (messages as DiaryMessageRow[]).map((message) =>
+      mapMessage(message),
+    );
+    const messagesById = new Map(
+      mappedMessages.map((message) => [message.id, message]),
+    );
+
+    return mapChatbox(
+      chatbox,
+      mappedMessages,
+      messagesById,
+      mapOrders(orderRow),
+    );
+  }
 }
