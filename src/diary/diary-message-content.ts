@@ -20,6 +20,7 @@ const ATTACHMENT_TYPES = new Set([
 const TICKET_STATES = new Set(['todo', 'doing', 'done']);
 const TICKET_PLACEMENTS = new Set(['inside', 'outside']);
 const TIMER_MODES = new Set(['timer', 'countup', 'datetime']);
+const HEADING_LEVELS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
 
 export function assertRichTextContent(value: unknown): string | null {
   if (!isPlainObject(value)) {
@@ -207,6 +208,25 @@ export function assertDecorators(value: unknown): string | null {
         (item.deadlineAt !== null && typeof item.deadlineAt !== 'string')
       ) {
         return 'timer decorator is invalid';
+      }
+
+      continue;
+    }
+
+    if (item.type === 'heading') {
+      if (
+        typeof item.title !== 'string' ||
+        typeof item.description !== 'string' ||
+        typeof item.headingLevel !== 'string' ||
+        !HEADING_LEVELS.has(item.headingLevel) ||
+        (item.customFontSize !== null &&
+          (typeof item.customFontSize !== 'number' ||
+            !Number.isFinite(item.customFontSize) ||
+            item.customFontSize < 1 ||
+            item.customFontSize > 124)) ||
+        (item.customFontSize !== null && item.headingLevel !== 'h6')
+      ) {
+        return 'heading decorator is invalid';
       }
 
       continue;
