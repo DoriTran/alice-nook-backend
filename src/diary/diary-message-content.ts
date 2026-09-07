@@ -271,3 +271,73 @@ export function assertReactions(value: unknown): string | null {
 
   return null;
 }
+
+export function assertLinkPreview(value: unknown): string | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  if (!isPlainObject(value) || !isJsonValue(value)) {
+    return 'linkPreview must be a JSON object';
+  }
+
+  const allowed = new Set([
+    'enabled',
+    'primaryUrl',
+    'normalizedUrl',
+    'metadata',
+  ]);
+  if (Object.keys(value).some((key) => !allowed.has(key))) {
+    return 'linkPreview contains unknown fields';
+  }
+
+  if (
+    typeof value.enabled !== 'boolean' ||
+    typeof value.primaryUrl !== 'string' ||
+    value.primaryUrl.length === 0 ||
+    value.primaryUrl.length > 2048 ||
+    typeof value.normalizedUrl !== 'string' ||
+    value.normalizedUrl.length === 0 ||
+    value.normalizedUrl.length > 2048
+  ) {
+    return 'linkPreview state is invalid';
+  }
+
+  if (value.metadata === undefined) {
+    return null;
+  }
+
+  if (!isPlainObject(value.metadata) || !isJsonValue(value.metadata)) {
+    return 'linkPreview metadata must be a JSON object';
+  }
+
+  const requiredStrings = ['url', 'normalizedUrl', 'hostname', 'fetchedAt'];
+  if (
+    requiredStrings.some(
+      (key) =>
+        typeof value.metadata?.[key] !== 'string' ||
+        value.metadata[key].length === 0,
+    )
+  ) {
+    return 'linkPreview metadata is invalid';
+  }
+
+  const optionalStrings = [
+    'siteName',
+    'title',
+    'description',
+    'imageUrl',
+    'faviconUrl',
+  ];
+  if (
+    optionalStrings.some(
+      (key) =>
+        value.metadata?.[key] !== undefined &&
+        typeof value.metadata[key] !== 'string',
+    )
+  ) {
+    return 'linkPreview metadata is invalid';
+  }
+
+  return null;
+}

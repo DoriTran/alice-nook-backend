@@ -1,4 +1,5 @@
 import {
+  assertLinkPreview,
   assertMessageContent,
   assertReactions,
   assertRichTextContent,
@@ -11,6 +12,31 @@ const doc = {
 };
 
 describe('message content guards', () => {
+  it('validates link preview state and metadata', () => {
+    expect(
+      assertLinkPreview({
+        enabled: true,
+        primaryUrl: 'www.example.com',
+        normalizedUrl: 'https://www.example.com/',
+        metadata: {
+          url: 'https://www.example.com/',
+          normalizedUrl: 'https://www.example.com/',
+          hostname: 'example.com',
+          imageUrl: 'https://cdn.example.com/preview.jpg',
+          fetchedAt: '2026-09-07T00:00:00.000Z',
+        },
+      }),
+    ).toBeNull();
+    expect(
+      assertLinkPreview({
+        enabled: true,
+        primaryUrl: 'https://example.com',
+        normalizedUrl: 'https://example.com/',
+        surprise: true,
+      }),
+    ).toBe('linkPreview contains unknown fields');
+  });
+
   it('accepts a TipTap doc with extension attrs', () => {
     expect(assertRichTextContent(doc)).toBeNull();
     expect(assertMessageContent('text', doc)).toBeNull();

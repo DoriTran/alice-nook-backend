@@ -18,6 +18,7 @@ import {
 import {
   IsAttachmentList,
   IsDecoratorList,
+  IsLinkPreview,
   IsReactionList,
   IsVariantContent,
 } from './message-content.validators';
@@ -57,6 +58,10 @@ export class CreateMessageDto {
   @IsOptional()
   @IsDecoratorList()
   decorators?: unknown;
+
+  @IsOptional()
+  @IsLinkPreview()
+  linkPreview?: unknown;
 
   @IsOptional()
   @ValidateIf((_, value) => value !== null)

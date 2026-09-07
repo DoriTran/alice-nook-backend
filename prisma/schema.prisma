@@ -149,6 +149,7 @@ model DiaryMessage {
   reactions        Json
   attachments      Json
   decorators       Json
+  linkPreview      Json              @default("{}")
   edited           Boolean           @default(false)
   createdAt        DateTime          @default(now())
   updatedAt        DateTime?

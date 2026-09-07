@@ -1,6 +1,7 @@
 import { IsBoolean, IsOptional } from 'class-validator';
 import {
   IsDecoratorList,
+  IsLinkPreview,
   IsReactionList,
   IsTodoContent,
 } from './message-content.validators';
@@ -25,4 +26,8 @@ export class PatchMessageDto {
   @IsOptional()
   @IsTodoContent()
   content?: unknown;
+
+  @IsOptional()
+  @IsLinkPreview()
+  linkPreview?: unknown;
 }

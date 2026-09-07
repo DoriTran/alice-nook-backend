@@ -65,6 +65,9 @@ const MESSAGE_TAG_INCLUDE = {
   messageTags: { select: { tagId: true } },
 } as const;
 
+const toLinkPreviewJson = (value: unknown): object =>
+  value === null ? {} : (value as object);
+
 @Injectable()
 export class DiaryService {
   constructor(private readonly prisma: PrismaService) {}
@@ -388,6 +391,9 @@ export class DiaryService {
           reactions: dto.reactions ?? [],
           attachments: dto.attachments ?? [],
           decorators: dto.decorators ?? [],
+          ...(dto.linkPreview !== undefined
+            ? { linkPreview: toLinkPreviewJson(dto.linkPreview) }
+            : {}),
           edited: false,
           updatedAt: null,
         },
@@ -445,6 +451,9 @@ export class DiaryService {
           ...(dto.content !== undefined
             ? { content: dto.content as object }
             : {}),
+          ...(dto.linkPreview !== undefined
+            ? { linkPreview: toLinkPreviewJson(dto.linkPreview) }
+            : {}),
           updatedAt: new Date(),
         },
         include: MESSAGE_TAG_INCLUDE,
@@ -475,6 +484,9 @@ export class DiaryService {
             : {}),
           ...(dto.decorators !== undefined
             ? { decorators: dto.decorators as object }
+            : {}),
+          ...(dto.linkPreview !== undefined
+            ? { linkPreview: toLinkPreviewJson(dto.linkPreview) }
             : {}),
           ...(dto.replyToMessageId !== undefined
             ? { replyToMessageId: dto.replyToMessageId }

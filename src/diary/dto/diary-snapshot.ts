@@ -77,6 +77,7 @@ export type DiaryMessageSnapshot = {
   edited: boolean;
   attachments: unknown;
   decorators: unknown;
+  linkPreview: unknown;
   createdAt: string;
   updatedAt: string | null;
 };

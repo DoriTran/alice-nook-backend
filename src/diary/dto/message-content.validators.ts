@@ -6,6 +6,7 @@ import {
 import {
   assertAttachments,
   assertDecorators,
+  assertLinkPreview,
   assertMessageContent,
   assertReactions,
   assertTodoContent,
@@ -77,6 +78,15 @@ export function IsReactionList(validationOptions?: ValidationOptions) {
     'isReactionList',
     (value) => assertReactions(value) === null,
     () => 'reactions are invalid',
+    validationOptions,
+  );
+}
+
+export function IsLinkPreview(validationOptions?: ValidationOptions) {
+  return addConstraint(
+    'isLinkPreview',
+    (value) => assertLinkPreview(value) === null,
+    () => 'linkPreview is invalid',
     validationOptions,
   );
 }

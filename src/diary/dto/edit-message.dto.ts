@@ -10,6 +10,7 @@ import { DIARY_ID_MAX_LENGTH, MESSAGE_ID_REGEX } from './diary-constraints';
 import {
   IsAttachmentList,
   IsDecoratorList,
+  IsLinkPreview,
   IsVariantContent,
 } from './message-content.validators';
 
@@ -27,6 +28,10 @@ export class EditMessageDto {
   @IsOptional()
   @IsDecoratorList()
   decorators?: unknown;
+
+  @IsOptional()
+  @IsLinkPreview()
+  linkPreview?: unknown;
 
   @IsOptional()
   @ValidateIf((_, value) => value !== null)

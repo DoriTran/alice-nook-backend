@@ -56,6 +56,7 @@ export type DiaryMessageRow = {
   reactions: unknown;
   attachments: unknown;
   decorators: unknown;
+  linkPreview: unknown;
   edited: boolean;
   createdAt: Date;
   updatedAt: Date | null;
@@ -143,6 +144,7 @@ export function mapMessage(message: DiaryMessageRow): DiaryMessageSnapshot {
     edited: message.edited,
     attachments: asJsonArray(message.attachments),
     decorators: asJsonArray(message.decorators),
+    linkPreview: asLinkPreview(message.linkPreview),
     createdAt: message.createdAt.toISOString(),
     updatedAt: toIso(message.updatedAt),
   };
@@ -239,6 +241,18 @@ function toIso(value: Date | null): string | null {
 
 function asJsonArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+function asLinkPreview(value: unknown): unknown {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    !('enabled' in value)
+  ) {
+    return null;
+  }
+  return value;
 }
 
 function asStringArray(value: unknown): string[] {
