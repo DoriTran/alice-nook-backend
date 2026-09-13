@@ -194,6 +194,9 @@ export function deriveChatboxFields(
   lastMessageAt: string | null;
   tags: DiaryChatboxTagStatistic[];
 } {
+  // The frontend mirrors this population rule: an existing order-map entry,
+  // including an empty one, is authoritative; only a missing key falls back
+  // to every message owned by the chatbox.
   const orderedIds = orders.chatboxMessageOrders[chatboxId];
   const messageIds =
     orderedIds ??

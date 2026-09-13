@@ -466,7 +466,7 @@ describe('DiaryService', () => {
       colorId: 'sage',
       pinned: false,
       archived: false,
-      notificationEnabled: false,
+      notificationEnabled: true,
       createdAt: new Date('2026-01-01T00:00:00.000Z'),
       updatedAt: null,
     };
@@ -490,7 +490,7 @@ describe('DiaryService', () => {
         lastMessageAt: null,
         pinned: false,
         archived: false,
-        notificationEnabled: false,
+        notificationEnabled: true,
         updatedAt: null,
       });
 
@@ -506,7 +506,7 @@ describe('DiaryService', () => {
           colorId: 'sage',
           pinned: false,
           archived: false,
-          notificationEnabled: false,
+          notificationEnabled: true,
           updatedAt: null,
         },
       });

@@ -1017,11 +1017,29 @@ describe('DiaryController (e2e)', () => {
       id: 'cb:inbox',
       groupId: null,
       hasUnread: false,
+      notificationEnabled: true,
       totalMessage: 0,
       lastMessageId: null,
       lastMessageAt: null,
       tags: [],
     });
+
+    await request(app.getHttpServer())
+      .post('/api/diary/chatboxes')
+      .set('x-test-user-id', USER_A)
+      .send({
+        id: 'cb:invalid-tags',
+        name: 'Invalid tags',
+        colorId: 'sage',
+        tags: [{ tagId: 'tag:diary', count: 0 }],
+      })
+      .expect(400);
+
+    await request(app.getHttpServer())
+      .patch('/api/diary/chatboxes/cb:inbox')
+      .set('x-test-user-id', USER_A)
+      .send({ tags: [{ tagId: 'tag:diary', count: 1 }] })
+      .expect(400);
 
     await request(app.getHttpServer())
       .post('/api/diary/chatboxes')
@@ -1206,7 +1224,7 @@ describe('DiaryController (e2e)', () => {
     expect(memory.orders).toHaveLength(0);
   });
 
-  it('appends created groups and chatboxes onto DiaryOrder', async () => {
+  it('appends groups and prepends newly created chatboxes onto DiaryOrder', async () => {
     await request(app.getHttpServer())
       .post('/api/diary/groups')
       .set('x-test-user-id', USER_A)
@@ -1230,7 +1248,7 @@ describe('DiaryController (e2e)', () => {
 
     const snapshot = await asUser(USER_A).expect(200);
     expect(asRecord(snapshot.body).orders).toEqual({
-      rootOrders: ['gr:personal', 'cb:inbox'],
+      rootOrders: ['cb:inbox', 'gr:personal'],
       groupChatboxOrders: { 'gr:personal': ['cb:notes'] },
       chatboxMessageOrders: { 'cb:inbox': [], 'cb:notes': [] },
     });
@@ -1717,7 +1735,7 @@ describe('DiaryController (e2e)', () => {
       .expect(400);
   });
 
-  it('replaces tags and removes a tag from every message in a chatbox including hidden rows', async () => {
+  it('derives positive chatbox tag counts and removes a tag only from messages in the target chatbox', async () => {
     const doc = {
       json: { type: 'doc', content: [{ type: 'paragraph' }] },
       preview: 'hi',
@@ -1727,6 +1745,11 @@ describe('DiaryController (e2e)', () => {
       .post('/api/diary/chatboxes')
       .set('x-test-user-id', USER_A)
       .send({ id: 'cb:notes', name: 'Notes', colorId: 'sage' })
+      .expect(201);
+    await request(app.getHttpServer())
+      .post('/api/diary/chatboxes')
+      .set('x-test-user-id', USER_A)
+      .send({ id: 'cb:other', name: 'Other', colorId: 'sage' })
       .expect(201);
     await request(app.getHttpServer())
       .post('/api/diary/tags')
@@ -1740,6 +1763,32 @@ describe('DiaryController (e2e)', () => {
       .send({
         id: 'ms:visible',
         chatboxId: 'cb:notes',
+        sender: 'user',
+        variant: 'text',
+        content: doc,
+        tagIds: ['tag:diary'],
+      })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post('/api/diary/messages')
+      .set('x-test-user-id', USER_A)
+      .send({
+        id: 'ms:second',
+        chatboxId: 'cb:notes',
+        sender: 'user',
+        variant: 'text',
+        content: doc,
+        tagIds: ['tag:diary'],
+      })
+      .expect(201);
+
+    await request(app.getHttpServer())
+      .post('/api/diary/messages')
+      .set('x-test-user-id', USER_A)
+      .send({
+        id: 'ms:other',
+        chatboxId: 'cb:other',
         sender: 'user',
         variant: 'text',
         content: doc,
@@ -1787,6 +1836,37 @@ describe('DiaryController (e2e)', () => {
       userId: USER_A,
     });
 
+    let snapshot = await asUser(USER_A).expect(200);
+    let chatboxes = asRecord(snapshot.body).chatboxes as Array<
+      Record<string, unknown>
+    >;
+    expect(chatboxes.find((chatbox) => chatbox.id === 'cb:notes')?.tags).toEqual(
+      [{ tagId: 'tag:diary', count: 2 }],
+    );
+    expect(chatboxes.find((chatbox) => chatbox.id === 'cb:other')?.tags).toEqual(
+      [{ tagId: 'tag:diary', count: 1 }],
+    );
+
+    await request(app.getHttpServer())
+      .put('/api/diary/messages/ms:visible/tags')
+      .set('x-test-user-id', USER_A)
+      .send({ tagIds: [] })
+      .expect(200);
+
+    snapshot = await asUser(USER_A).expect(200);
+    chatboxes = asRecord(snapshot.body).chatboxes as Array<
+      Record<string, unknown>
+    >;
+    expect(chatboxes.find((chatbox) => chatbox.id === 'cb:notes')?.tags).toEqual(
+      [{ tagId: 'tag:diary', count: 1 }],
+    );
+
+    await request(app.getHttpServer())
+      .put('/api/diary/messages/ms:visible/tags')
+      .set('x-test-user-id', USER_A)
+      .send({ tagIds: ['tag:diary'] })
+      .expect(200);
+
     await request(app.getHttpServer())
       .post('/api/diary/chatboxes/cb:notes/remove-tag')
       .set('x-test-user-id', USER_A)
@@ -1797,12 +1877,45 @@ describe('DiaryController (e2e)', () => {
       });
 
     expect(
-      memory.messageTags.find((join) => join.tagId === 'tag:diary'),
+      memory.messageTags.find(
+        (join) =>
+          join.tagId === 'tag:diary' && join.messageId !== 'ms:other',
+      ),
     ).toBeUndefined();
     expect(memory.tags.find((tag) => tag.id === 'tag:diary')).toBeTruthy();
     expect(
       memory.messages.find((row) => row.id === 'ms:hidden')?.updatedAt,
     ).toBeTruthy();
+
+    snapshot = await asUser(USER_A).expect(200);
+    chatboxes = asRecord(snapshot.body).chatboxes as Array<
+      Record<string, unknown>
+    >;
+    expect(chatboxes.find((chatbox) => chatbox.id === 'cb:notes')?.tags).toEqual(
+      [],
+    );
+    expect(chatboxes.find((chatbox) => chatbox.id === 'cb:other')?.tags).toEqual(
+      [{ tagId: 'tag:diary', count: 1 }],
+    );
+
+    await request(app.getHttpServer())
+      .delete('/api/diary/messages/ms:other')
+      .set('x-test-user-id', USER_A)
+      .expect(204);
+
+    snapshot = await asUser(USER_A).expect(200);
+    chatboxes = asRecord(snapshot.body).chatboxes as Array<
+      Record<string, unknown>
+    >;
+    expect(chatboxes.find((chatbox) => chatbox.id === 'cb:other')?.tags).toEqual(
+      [],
+    );
+    expect(
+      chatboxes.flatMap((chatbox) => chatbox.tags as unknown[]).every((tag) => {
+        const count = asRecord(tag).count;
+        return typeof count === 'number' && count > 0;
+      }),
+    ).toBe(true);
   });
 
   const paletteShades = {

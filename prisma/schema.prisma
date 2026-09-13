@@ -110,7 +110,7 @@ model DiaryChatbox {
   colorId             String
   pinned              Boolean        @default(false)
   archived            Boolean        @default(false)
-  notificationEnabled Boolean        @default(false)
+  notificationEnabled Boolean        @default(true)
   createdAt           DateTime       @default(now())
   updatedAt           DateTime?
   messages            DiaryMessage[]

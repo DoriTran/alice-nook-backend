@@ -48,11 +48,11 @@ export function appendChatbox(
 
   if (groupId) {
     next.groupChatboxOrders[groupId] = uniqueIds([
-      ...(next.groupChatboxOrders[groupId] ?? []),
       chatboxId,
+      ...(next.groupChatboxOrders[groupId] ?? []),
     ]);
   } else {
-    next.rootOrders = uniqueIds([...next.rootOrders, chatboxId]);
+    next.rootOrders = uniqueIds([chatboxId, ...next.rootOrders]);
   }
 
   next.chatboxMessageOrders[chatboxId] = [];

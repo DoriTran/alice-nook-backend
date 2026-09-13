@@ -31,19 +31,27 @@ describe('diary-orders', () => {
     });
   });
 
-  it('appends an ungrouped chatbox to root and initializes message order', () => {
-    const next = appendChatbox(emptyOrders(), 'cb:notes', null);
+  it('prepends an ungrouped chatbox to root and initializes message order', () => {
+    const start = appendChatbox(emptyOrders(), 'cb:older', null);
+    const next = appendChatbox(start, 'cb:notes', null);
 
-    expect(next.rootOrders).toEqual(['cb:notes']);
-    expect(next.chatboxMessageOrders).toEqual({ 'cb:notes': [] });
+    expect(next.rootOrders).toEqual(['cb:notes', 'cb:older']);
+    expect(next.chatboxMessageOrders).toEqual({
+      'cb:older': [],
+      'cb:notes': [],
+    });
   });
 
-  it('appends a grouped chatbox to that group list', () => {
-    const start = appendGroup(emptyOrders(), 'gr:personal');
+  it('prepends a grouped chatbox to that group list', () => {
+    const group = appendGroup(emptyOrders(), 'gr:personal');
+    const start = appendChatbox(group, 'cb:older', 'gr:personal');
     const next = appendChatbox(start, 'cb:notes', 'gr:personal');
 
     expect(next.rootOrders).toEqual(['gr:personal']);
-    expect(next.groupChatboxOrders['gr:personal']).toEqual(['cb:notes']);
+    expect(next.groupChatboxOrders['gr:personal']).toEqual([
+      'cb:notes',
+      'cb:older',
+    ]);
     expect(next.chatboxMessageOrders['cb:notes']).toEqual([]);
   });
 
@@ -72,6 +80,22 @@ describe('diary-orders', () => {
     expect(next.rootOrders).toEqual(['gr:personal']);
     expect(next.groupChatboxOrders['gr:personal']).toEqual(['cb:notes']);
     expect(next.chatboxMessageOrders).toEqual({ 'cb:notes': ['ms:1'] });
+  });
+
+  it('appends a moved chatbox after existing items in its destination', () => {
+    const start: DiaryOrdersSnapshot = {
+      rootOrders: ['gr:personal', 'cb:moved'],
+      groupChatboxOrders: { 'gr:personal': ['cb:existing'] },
+      chatboxMessageOrders: { 'cb:existing': [], 'cb:moved': [] },
+    };
+
+    const next = moveChatboxOrders(start, 'cb:moved', null, 'gr:personal');
+
+    expect(next.rootOrders).toEqual(['gr:personal']);
+    expect(next.groupChatboxOrders['gr:personal']).toEqual([
+      'cb:existing',
+      'cb:moved',
+    ]);
   });
 
   it('moves a chatbox from a group to root and keeps the empty source list', () => {

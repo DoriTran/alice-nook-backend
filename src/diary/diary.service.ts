@@ -192,7 +192,7 @@ export class DiaryService {
           colorId: dto.colorId,
           pinned: false,
           archived: false,
-          notificationEnabled: false,
+          notificationEnabled: true,
           updatedAt: null,
         },
       });
