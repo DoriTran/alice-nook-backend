@@ -13,6 +13,7 @@ describe('DiaryController', () => {
   let controller: DiaryController;
   const diaryService = {
     getSnapshot: jest.fn(),
+    reconcileTimers: jest.fn(),
     createGroup: jest.fn(),
     updateGroup: jest.fn(),
     deleteGroup: jest.fn(),
@@ -27,6 +28,7 @@ describe('DiaryController', () => {
     deletePalette: jest.fn(),
     syncSidebarLayout: jest.fn(),
     createMessage: jest.fn(),
+    getMessage: jest.fn(),
     patchMessage: jest.fn(),
     editMessage: jest.fn(),
     deleteMessage: jest.fn(),
@@ -64,6 +66,28 @@ describe('DiaryController', () => {
       controller.getDiary({ user: { id: 'user-a' } } as never),
     ).resolves.toEqual(snapshot);
     expect(diaryService.getSnapshot).toHaveBeenCalledWith('user-a');
+  });
+
+  it('reconciles timers for the session user', async () => {
+    const result = {
+      affectedChatboxIds: [],
+      ringingChatboxIds: [],
+      affectedMessages: [],
+    };
+    diaryService.reconcileTimers.mockResolvedValue(result);
+    await expect(
+      controller.reconcileTimers({ user: { id: 'user-a' } } as never),
+    ).resolves.toEqual(result);
+    expect(diaryService.reconcileTimers).toHaveBeenCalledWith('user-a');
+  });
+
+  it('reads one message for the session user', async () => {
+    const message = { id: 'ms:1', chatboxId: 'cb:1' };
+    diaryService.getMessage.mockResolvedValue(message);
+    await expect(
+      controller.getMessage({ user: { id: 'user-a' } } as never, 'ms:1'),
+    ).resolves.toEqual(message);
+    expect(diaryService.getMessage).toHaveBeenCalledWith('user-a', 'ms:1');
   });
 
   it('scopes group writes to the session user', async () => {

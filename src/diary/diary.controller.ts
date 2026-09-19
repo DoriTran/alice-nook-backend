@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { Session, type UserSession } from '@thallesp/nestjs-better-auth';
 import { DiaryService } from './diary.service';
+import type { TimerReconciliationResponse } from './diary-timers';
 import { CreateChatboxDto } from './dto/create-chatbox.dto';
 import { CreateGroupDto } from './dto/create-group.dto';
 import { CreateMessageDto } from './dto/create-message.dto';
@@ -44,6 +45,13 @@ export class DiaryController {
   @Get()
   getDiary(@Session() session: UserSession): Promise<DiarySnapshot> {
     return this.diaryService.getSnapshot(session.user.id);
+  }
+
+  @Post('timers/reconcile')
+  reconcileTimers(
+    @Session() session: UserSession,
+  ): Promise<TimerReconciliationResponse> {
+    return this.diaryService.reconcileTimers(session.user.id);
   }
 
   @Post('groups')
@@ -139,6 +147,14 @@ export class DiaryController {
     @Body() dto: CreateMessageDto,
   ): Promise<DiaryMessageSnapshot> {
     return this.diaryService.createMessage(session.user.id, dto);
+  }
+
+  @Get('messages/:id')
+  getMessage(
+    @Session() session: UserSession,
+    @Param('id') id: string,
+  ): Promise<DiaryMessageSnapshot> {
+    return this.diaryService.getMessage(session.user.id, id);
   }
 
   @Patch('messages/:id')

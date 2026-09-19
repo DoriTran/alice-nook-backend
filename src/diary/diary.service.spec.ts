@@ -84,6 +84,7 @@ function createPrismaMock() {
     },
     diaryOrder: { findUnique: jest.fn(), upsert: jest.fn() },
     $transaction: jest.fn(),
+    $queryRaw: jest.fn(),
   };
 }
 
@@ -992,6 +993,51 @@ describe('DiaryService', () => {
       messageTags: [],
     };
 
+    it('gets only a message owned by the current user', async () => {
+      prisma.diaryMessage.findFirst.mockResolvedValue(createdMessage);
+      await expect(service.getMessage(USER_A, 'ms:1')).resolves.toMatchObject({
+        id: 'ms:1',
+        chatboxId: 'cb:notes',
+      });
+      expect(prisma.diaryMessage.findFirst).toHaveBeenCalledWith({
+        where: { id: 'ms:1', userId: USER_A },
+        include: expect.any(Object),
+      });
+    });
+
+    it('preserves an already processed timer in a stale decorator PATCH', async () => {
+      const deadlineAt = '2026-01-01T00:00:00.000Z';
+      const oldTimer = {
+        type: 'timer',
+        mode: 'datetime',
+        deadlineAt,
+        alertedAt: null,
+        running: true,
+        pause: false,
+        durationMs: 1000,
+      };
+      prisma.$queryRaw.mockResolvedValue([{ id: 'ms:1' }]);
+      prisma.diaryMessage.findFirst.mockResolvedValue({
+        ...createdMessage,
+        decorators: [{ ...oldTimer, alertedAt: deadlineAt }],
+      });
+      prisma.diaryMessage.update.mockResolvedValue(createdMessage);
+
+      await service.patchMessage(USER_A, 'ms:1', { decorators: [oldTimer] });
+      expect(prisma.diaryMessage.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            decorators: [
+              expect.objectContaining({
+                alertedAt: deadlineAt,
+                running: false,
+              }),
+            ],
+          }),
+        }),
+      );
+    });
+
     it('creates a text message and appends it to chatboxMessageOrders', async () => {
       prisma.diaryChatbox.findFirst.mockResolvedValue(ownedChatbox);
       prisma.diaryMessage.create.mockResolvedValue(createdMessage);
@@ -1554,6 +1600,73 @@ describe('DiaryService', () => {
       ).rejects.toBeInstanceOf(ConflictException);
       expect(attempt).toBe(2);
       expect(prisma.diaryCustomPalette.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('timer reconciliation', () => {
+    const deadlineAt = '2020-01-01T00:00:00.000Z';
+    const timer = {
+      type: 'timer',
+      mode: 'datetime',
+      deadlineAt,
+      alertedAt: null,
+      running: true,
+      pause: false,
+      durationMs: 1000,
+    };
+
+    it('claims a timer once and leaves notification-disabled chatboxes silent', async () => {
+      let decorators: object[] = [timer];
+      prisma.$queryRaw.mockResolvedValue([{ id: 'ms:timer' }]);
+      prisma.diaryMessage.findMany.mockImplementation(() =>
+        Promise.resolve([
+          { id: 'ms:timer', chatboxId: 'cb:quiet', decorators },
+        ]),
+      );
+      prisma.diaryMessage.update.mockImplementation(({ data }) => {
+        decorators = data.decorators;
+        return Promise.resolve({});
+      });
+      prisma.diaryChatbox.findMany.mockResolvedValue([]);
+
+      const first = await service.reconcileTimers(USER_A);
+      const second = await service.reconcileTimers(USER_A);
+
+      expect(first.affectedChatboxIds).toEqual(['cb:quiet']);
+      expect(first.ringingChatboxIds).toEqual([]);
+      expect(first.affectedMessages[0].processedTimers).toHaveLength(1);
+      expect(second.affectedMessages).toEqual([]);
+      expect(prisma.diaryMessage.update).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns no records when another request holds the candidate lock', async () => {
+      prisma.$queryRaw.mockResolvedValue([]);
+      await expect(service.reconcileTimers(USER_A)).resolves.toEqual({
+        affectedChatboxIds: [],
+        ringingChatboxIds: [],
+        affectedMessages: [],
+      });
+      expect(prisma.diaryMessage.update).not.toHaveBeenCalled();
+    });
+
+    it('returns a claim from only one of two close requests', async () => {
+      prisma.$queryRaw
+        .mockResolvedValueOnce([{ id: 'ms:timer' }])
+        .mockResolvedValueOnce([]);
+      prisma.diaryMessage.findMany.mockResolvedValue([
+        { id: 'ms:timer', chatboxId: 'cb:alert', decorators: [timer] },
+      ]);
+      prisma.diaryMessage.update.mockResolvedValue({});
+      prisma.diaryChatbox.findMany.mockResolvedValue([{ id: 'cb:alert' }]);
+
+      const [first, second] = await Promise.all([
+        service.reconcileTimers(USER_A),
+        service.reconcileTimers(USER_A),
+      ]);
+      expect(first.affectedMessages).toHaveLength(1);
+      expect(first.ringingChatboxIds).toEqual(['cb:alert']);
+      expect(second.affectedMessages).toEqual([]);
+      expect(prisma.diaryMessage.update).toHaveBeenCalledTimes(1);
     });
   });
 });

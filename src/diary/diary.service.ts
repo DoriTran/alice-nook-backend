@@ -16,6 +16,11 @@ import {
 import { withDiaryOrderTransaction } from './diary-order-tx';
 import { mapPrismaDiaryWriteError } from './diary-prisma-errors';
 import {
+  preserveProcessedTimers,
+  processOverdueTimers,
+  type TimerReconciliationResponse,
+} from './diary-timers';
+import {
   appendChatbox,
   appendGroup,
   appendMessage,
@@ -72,6 +77,86 @@ const toLinkPreviewJson = (value: unknown): object =>
 export class DiaryService {
   constructor(private readonly prisma: PrismaService) {}
 
+  async reconcileTimers(userId: string): Promise<TimerReconciliationResponse> {
+    return this.prisma.$transaction(async (tx) => {
+      const now = new Date();
+      const candidates = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "diary_message"
+        WHERE "userId" = ${userId}
+          AND jsonb_typeof("decorators") = 'array'
+          AND EXISTS (
+            SELECT 1 FROM jsonb_array_elements("decorators") AS item(value)
+            WHERE item.value->>'type' = 'timer'
+              AND item.value->>'mode' IN ('timer', 'datetime')
+              AND item.value->>'deadlineAt' IS NOT NULL
+              AND COALESCE(item.value->>'alertedAt', '') = ''
+          )
+        FOR UPDATE SKIP LOCKED
+      `;
+      if (candidates.length === 0) {
+        return {
+          affectedChatboxIds: [],
+          ringingChatboxIds: [],
+          affectedMessages: [],
+        };
+      }
+
+      const messages = await tx.diaryMessage.findMany({
+        where: { userId, id: { in: candidates.map(({ id }) => id) } },
+        select: { id: true, chatboxId: true, decorators: true },
+      });
+      const affectedMessages: TimerReconciliationResponse['affectedMessages'] =
+        [];
+
+      for (const message of messages) {
+        const result = processOverdueTimers(message.decorators, now);
+        if (result.processedTimers.length === 0) continue;
+
+        await tx.diaryMessage.update({
+          where: { id: message.id },
+          // Prisma requires a JSON input cast for this validated decorator array.
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
+          data: { decorators: result.decorators as object, updatedAt: now },
+        });
+        affectedMessages.push({
+          messageId: message.id,
+          chatboxId: message.chatboxId,
+          ...result,
+        });
+      }
+
+      const affectedChatboxIds = [
+        ...new Set(affectedMessages.map(({ chatboxId }) => chatboxId)),
+      ];
+      const enabledChatboxes = affectedChatboxIds.length
+        ? await tx.diaryChatbox.findMany({
+            where: {
+              userId,
+              id: { in: affectedChatboxIds },
+              notificationEnabled: true,
+            },
+            select: { id: true },
+          })
+        : [];
+
+      return {
+        affectedChatboxIds,
+        ringingChatboxIds: enabledChatboxes.map(({ id }) => id),
+        affectedMessages,
+      };
+    });
+  }
+
+  private async lockOwnedMessage(tx: DiaryDb, userId: string, id: string) {
+    const rows = await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id" FROM "diary_message"
+      WHERE "userId" = ${userId} AND "id" = ${id}
+      FOR UPDATE
+    `;
+    if (rows.length === 0) throw new NotFoundException('Message not found');
+    return this.requireOwnedMessage(tx, userId, id);
+  }
+
   async getSnapshot(userId: string): Promise<DiarySnapshot> {
     const [groups, chatboxes, messages, tags, palettes, orderRow] =
       await Promise.all([
@@ -102,6 +187,10 @@ export class DiaryService {
       palettes: palettes.map((palette) => mapPalette(palette)),
       orders,
     };
+  }
+
+  async getMessage(userId: string, id: string): Promise<DiaryMessageSnapshot> {
+    return mapMessage(await this.requireOwnedMessage(this.prisma, userId, id));
   }
 
   async createGroup(
@@ -428,38 +517,49 @@ export class DiaryService {
     id: string,
     dto: PatchMessageDto,
   ): Promise<DiaryMessageSnapshot> {
-    const current = await this.requireOwnedMessage(this.prisma, userId, id);
-
-    if (dto.content !== undefined && current.variant !== 'todo') {
-      throw new BadRequestException(
-        'PATCH content is only allowed on todo messages',
-      );
-    }
-
     try {
-      const message = await this.prisma.diaryMessage.update({
-        where: { id },
-        data: {
-          ...(dto.pinned !== undefined ? { pinned: dto.pinned } : {}),
-          ...(dto.archived !== undefined ? { archived: dto.archived } : {}),
-          ...(dto.reactions !== undefined
-            ? { reactions: dto.reactions as object }
-            : {}),
-          ...(dto.decorators !== undefined
-            ? { decorators: dto.decorators as object }
-            : {}),
-          ...(dto.content !== undefined
-            ? { content: dto.content as object }
-            : {}),
-          ...(dto.linkPreview !== undefined
-            ? { linkPreview: toLinkPreviewJson(dto.linkPreview) }
-            : {}),
-          updatedAt: new Date(),
-        },
-        include: MESSAGE_TAG_INCLUDE,
-      });
+      const write = async (db: DiaryDb, locked: boolean) => {
+        const current = locked
+          ? await this.lockOwnedMessage(db, userId, id)
+          : await this.requireOwnedMessage(db, userId, id);
+        if (dto.content !== undefined && current.variant !== 'todo') {
+          throw new BadRequestException(
+            'PATCH content is only allowed on todo messages',
+          );
+        }
 
-      return mapMessage(message);
+        const message = await db.diaryMessage.update({
+          where: { id },
+          data: {
+            ...(dto.pinned !== undefined ? { pinned: dto.pinned } : {}),
+            ...(dto.archived !== undefined ? { archived: dto.archived } : {}),
+            ...(dto.reactions !== undefined
+              ? { reactions: dto.reactions as object }
+              : {}),
+            ...(dto.decorators !== undefined
+              ? {
+                  decorators: preserveProcessedTimers(
+                    dto.decorators,
+                    current.decorators,
+                  ) as object,
+                }
+              : {}),
+            ...(dto.content !== undefined
+              ? { content: dto.content as object }
+              : {}),
+            ...(dto.linkPreview !== undefined
+              ? { linkPreview: toLinkPreviewJson(dto.linkPreview) }
+              : {}),
+            updatedAt: new Date(),
+          },
+          include: MESSAGE_TAG_INCLUDE,
+        });
+        return mapMessage(message);
+      };
+
+      return dto.decorators !== undefined
+        ? await this.prisma.$transaction((tx) => write(tx, true))
+        : await write(this.prisma, false);
     } catch (error) {
       return mapPrismaDiaryWriteError(error);
     }
@@ -470,34 +570,45 @@ export class DiaryService {
     id: string,
     dto: EditMessageDto,
   ): Promise<DiaryMessageSnapshot> {
-    await this.requireOwnedMessage(this.prisma, userId, id);
-    await this.requireLiveReply(this.prisma, userId, dto.replyToMessageId);
-
     try {
-      const message = await this.prisma.diaryMessage.update({
-        where: { id },
-        data: {
-          variant: dto.variant,
-          content: dto.content as object,
-          ...(dto.attachments !== undefined
-            ? { attachments: dto.attachments as object }
-            : {}),
-          ...(dto.decorators !== undefined
-            ? { decorators: dto.decorators as object }
-            : {}),
-          ...(dto.linkPreview !== undefined
-            ? { linkPreview: toLinkPreviewJson(dto.linkPreview) }
-            : {}),
-          ...(dto.replyToMessageId !== undefined
-            ? { replyToMessageId: dto.replyToMessageId }
-            : {}),
-          edited: true,
-          updatedAt: new Date(),
-        },
-        include: MESSAGE_TAG_INCLUDE,
-      });
+      const write = async (db: DiaryDb, locked: boolean) => {
+        const current = locked
+          ? await this.lockOwnedMessage(db, userId, id)
+          : await this.requireOwnedMessage(db, userId, id);
+        await this.requireLiveReply(db, userId, dto.replyToMessageId);
+        const message = await db.diaryMessage.update({
+          where: { id },
+          data: {
+            variant: dto.variant,
+            content: dto.content as object,
+            ...(dto.attachments !== undefined
+              ? { attachments: dto.attachments as object }
+              : {}),
+            ...(dto.decorators !== undefined
+              ? {
+                  decorators: preserveProcessedTimers(
+                    dto.decorators,
+                    current.decorators,
+                  ) as object,
+                }
+              : {}),
+            ...(dto.linkPreview !== undefined
+              ? { linkPreview: toLinkPreviewJson(dto.linkPreview) }
+              : {}),
+            ...(dto.replyToMessageId !== undefined
+              ? { replyToMessageId: dto.replyToMessageId }
+              : {}),
+            edited: true,
+            updatedAt: new Date(),
+          },
+          include: MESSAGE_TAG_INCLUDE,
+        });
+        return mapMessage(message);
+      };
 
-      return mapMessage(message);
+      return dto.decorators !== undefined
+        ? await this.prisma.$transaction((tx) => write(tx, true))
+        : await write(this.prisma, false);
     } catch (error) {
       return mapPrismaDiaryWriteError(error);
     }
