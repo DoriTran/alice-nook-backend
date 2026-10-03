@@ -1,7 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 
-export const MEBIBYTE = 1024 * 1024;
-export const MAX_ATTACHMENT_SIZE_BYTES = 200 * MEBIBYTE;
+export const MAX_ATTACHMENT_SIZE_BYTES = 200 * 1000 * 1000;
 
 export function assertUploadSize(_mimeType: string, size: number): void {
   if (size > MAX_ATTACHMENT_SIZE_BYTES) {

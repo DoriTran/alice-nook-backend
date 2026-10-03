@@ -14,7 +14,7 @@ describe('upload validation', () => {
     'application/zip',
     'application/javascript',
     'application/octet-stream',
-  ])('accepts %s at exactly 200 MiB', (mimeType) => {
+  ])('accepts %s at exactly 200 MB', (mimeType) => {
     expect(() =>
       assertUploadSize(mimeType, MAX_ATTACHMENT_SIZE_BYTES),
     ).not.toThrow();
@@ -28,7 +28,7 @@ describe('upload validation', () => {
     'application/zip',
     'application/javascript',
     'application/octet-stream',
-  ])('rejects %s at 200 MiB plus one byte', (mimeType) => {
+  ])('rejects %s at 200 MB plus one byte', (mimeType) => {
     expect(() =>
       assertUploadSize(mimeType, MAX_ATTACHMENT_SIZE_BYTES + 1),
     ).toThrow(BadRequestException);

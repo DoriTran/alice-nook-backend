@@ -140,7 +140,7 @@ describe('UploadsController (e2e)', () => {
     'application/zip',
     'application/javascript',
     'application/octet-stream',
-  ])('accepts %s at exactly 200 MiB', (mimeType) =>
+  ])('accepts %s at exactly 200 MB', (mimeType) =>
     postPresign({
       ...validBody,
       mimeType,
@@ -156,7 +156,7 @@ describe('UploadsController (e2e)', () => {
     'application/zip',
     'application/javascript',
     'application/octet-stream',
-  ])('rejects %s at 200 MiB plus one byte', (mimeType) =>
+  ])('rejects %s at 200 MB plus one byte', (mimeType) =>
     postPresign({
       ...validBody,
       mimeType,
