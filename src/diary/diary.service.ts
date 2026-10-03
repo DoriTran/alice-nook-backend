@@ -67,6 +67,7 @@ import type { UpdateChatboxDto } from './dto/update-chatbox.dto';
 import type { UpdateGroupDto } from './dto/update-group.dto';
 import type { UpdateTagDto } from './dto/update-tag.dto';
 import { isDurableAttachmentId } from './diary-message-content';
+import { UploadsService } from '../uploads/uploads.service';
 
 const MESSAGE_TAG_INCLUDE = {
   messageTags: { select: { tagId: true } },
@@ -81,6 +82,7 @@ export class DiaryService {
 
   constructor(
     private readonly prisma: PrismaService,
+    private readonly uploads: UploadsService,
     config?: ConfigService,
   ) {
     this.durableWritesEnabled =
@@ -381,14 +383,36 @@ export class DiaryService {
   }
 
   async deleteChatbox(userId: string, id: string): Promise<void> {
-    await withDiaryOrderTransaction(this.prisma, async (tx) => {
-      const chatbox = await this.requireOwnedChatbox(tx, userId, id);
-      const orders = await this.loadOrders(tx, userId);
-      const next = deleteChatboxOrders(orders, id, chatbox.groupId);
+    const cleanupIds = await withDiaryOrderTransaction(
+      this.prisma,
+      async (tx) => {
+        const chatbox = await this.requireOwnedChatbox(tx, userId, id);
+        const orders = await this.loadOrders(tx, userId);
+        const next = deleteChatboxOrders(orders, id, chatbox.groupId);
+        const messages = await tx.diaryMessage.findMany({
+          where: { userId, chatboxId: id },
+          select: { attachments: true, content: true },
+        });
+        const attachmentIds = [
+          ...new Set(
+            messages.flatMap((message) =>
+              this.collectAttachmentIds(message.attachments, message.content),
+            ),
+          ),
+        ];
+        await this.lockAttachmentObjects(tx, userId, attachmentIds);
 
-      await tx.diaryChatbox.delete({ where: { id } });
-      await this.saveOrders(tx, userId, next);
-    });
+        await tx.diaryChatbox.delete({ where: { id } });
+        const pendingIds = await this.markUnreferencedForCleanup(
+          tx,
+          userId,
+          attachmentIds,
+        );
+        await this.saveOrders(tx, userId, next);
+        return pendingIds;
+      },
+    );
+    await this.uploads.cleanupPendingAttachments(userId, cleanupIds);
   }
 
   async syncSidebarLayout(
@@ -576,21 +600,25 @@ export class DiaryService {
           },
           include: MESSAGE_TAG_INCLUDE,
         });
-        if (dto.content !== undefined) {
-          await this.syncAttachmentReferences(
-            db,
-            userId,
-            id,
-            this.collectAttachmentIds(current.attachments, current.content),
-            this.collectAttachmentIds(current.attachments, dto.content),
-          );
-        }
-        return mapMessage(message);
+        const cleanupIds =
+          dto.content !== undefined
+            ? await this.syncAttachmentReferences(
+                db,
+                userId,
+                id,
+                this.collectAttachmentIds(current.attachments, current.content),
+                this.collectAttachmentIds(current.attachments, dto.content),
+              )
+            : [];
+        return { message: mapMessage(message), cleanupIds };
       };
 
-      return dto.decorators !== undefined
-        ? await this.prisma.$transaction((tx) => write(tx, true))
-        : await write(this.prisma, false);
+      const result =
+        dto.decorators !== undefined || dto.content !== undefined
+          ? await this.prisma.$transaction((tx) => write(tx, true))
+          : await write(this.prisma, false);
+      await this.uploads.cleanupPendingAttachments(userId, result.cleanupIds);
+      return result.message;
     } catch (error) {
       return mapPrismaDiaryWriteError(error);
     }
@@ -603,10 +631,8 @@ export class DiaryService {
   ): Promise<DiaryMessageSnapshot> {
     this.assertDurableWrite(dto.attachments, dto.content);
     try {
-      const write = async (db: DiaryDb, locked: boolean) => {
-        const current = locked
-          ? await this.lockOwnedMessage(db, userId, id)
-          : await this.requireOwnedMessage(db, userId, id);
+      const write = async (db: DiaryDb) => {
+        const current = await this.lockOwnedMessage(db, userId, id);
         await this.requireLiveReply(db, userId, dto.replyToMessageId);
         const message = await db.diaryMessage.update({
           where: { id },
@@ -635,7 +661,7 @@ export class DiaryService {
           },
           include: MESSAGE_TAG_INCLUDE,
         });
-        await this.syncAttachmentReferences(
+        const cleanupIds = await this.syncAttachmentReferences(
           db,
           userId,
           id,
@@ -645,32 +671,42 @@ export class DiaryService {
             dto.content,
           ),
         );
-        return mapMessage(message);
+        return { message: mapMessage(message), cleanupIds };
       };
 
-      return dto.decorators !== undefined
-        ? await this.prisma.$transaction((tx) => write(tx, true))
-        : await write(this.prisma, false);
+      const result = await this.prisma.$transaction((tx) => write(tx));
+      await this.uploads.cleanupPendingAttachments(userId, result.cleanupIds);
+      return result.message;
     } catch (error) {
       return mapPrismaDiaryWriteError(error);
     }
   }
 
   async deleteMessage(userId: string, id: string): Promise<void> {
-    await withDiaryOrderTransaction(this.prisma, async (tx) => {
-      const message = await this.requireOwnedMessage(tx, userId, id);
-      const orders = await this.loadOrders(tx, userId);
-      const next = deleteMessageOrders(orders, message.chatboxId, id);
+    const cleanupIds = await withDiaryOrderTransaction(
+      this.prisma,
+      async (tx) => {
+        const message = await this.requireOwnedMessage(tx, userId, id);
+        const orders = await this.loadOrders(tx, userId);
+        const next = deleteMessageOrders(orders, message.chatboxId, id);
 
-      const attachmentIds = this.collectAttachmentIds(
-        message.attachments,
-        message.content,
-      );
+        const attachmentIds = this.collectAttachmentIds(
+          message.attachments,
+          message.content,
+        );
+        await this.lockAttachmentObjects(tx, userId, attachmentIds);
 
-      await tx.diaryMessage.delete({ where: { id } });
-      await this.markUnreferencedForCleanup(tx, attachmentIds);
-      await this.saveOrders(tx, userId, next);
-    });
+        await tx.diaryMessage.delete({ where: { id } });
+        const pendingIds = await this.markUnreferencedForCleanup(
+          tx,
+          userId,
+          attachmentIds,
+        );
+        await this.saveOrders(tx, userId, next);
+        return pendingIds;
+      },
+    );
+    await this.uploads.cleanupPendingAttachments(userId, cleanupIds);
   }
 
   async setMessageTags(
@@ -1121,16 +1157,17 @@ export class DiaryService {
   ) {
     const added = next.filter((id) => !previous.includes(id));
     const removed = previous.filter((id) => !next.includes(id));
+    const locked = await this.lockAttachmentObjects(db, userId, [
+      ...added,
+      ...removed,
+    ]);
     if (added.length) {
-      const rows = await db.diaryAttachmentObject.findMany({
-        where: {
-          id: { in: added },
-          userId,
-          status: { in: ['uploaded', 'committed'] },
-        },
-        select: { id: true },
-      });
-      if (rows.length !== added.length) throw new NotFoundException();
+      const eligible = locked.filter(
+        (row) =>
+          added.includes(row.id) &&
+          (row.status === 'uploaded' || row.status === 'committed'),
+      );
+      if (eligible.length !== added.length) throw new NotFoundException();
       await db.diaryMessageAttachment.createMany({
         data: added.map((attachmentId) => ({ messageId, attachmentId })),
         skipDuplicates: true,
@@ -1144,22 +1181,49 @@ export class DiaryService {
       await db.diaryMessageAttachment.deleteMany({
         where: { messageId, attachmentId: { in: removed } },
       });
-      await this.markUnreferencedForCleanup(db, removed);
+      return this.markUnreferencedForCleanup(db, userId, removed);
     }
+    return [];
   }
 
-  private async markUnreferencedForCleanup(db: DiaryDb, ids: string[]) {
+  private async lockAttachmentObjects(
+    db: DiaryDb,
+    userId: string,
+    ids: string[],
+  ): Promise<Array<{ id: string; status: string }>> {
+    const rows: Array<{ id: string; status: string }> = [];
+    for (const id of [...new Set(ids)].sort()) {
+      rows.push(
+        ...(await db.$queryRaw<Array<{ id: string; status: string }>>`
+          SELECT "id", "status" FROM "diary_attachment_object"
+          WHERE "id" = ${id} AND "userId" = ${userId}
+          FOR UPDATE
+        `),
+      );
+    }
+    return rows;
+  }
+
+  private async markUnreferencedForCleanup(
+    db: DiaryDb,
+    userId: string,
+    ids: string[],
+  ): Promise<string[]> {
+    const pendingIds: string[] = [];
     for (const id of ids) {
       const referenced = await db.diaryMessageAttachment.findFirst({
         where: { attachmentId: id },
         select: { attachmentId: true },
       });
-      if (!referenced)
-        await db.diaryAttachmentObject.updateMany({
-          where: { id, status: 'committed' },
+      if (!referenced) {
+        const updated = await db.diaryAttachmentObject.updateMany({
+          where: { id, userId, status: 'committed' },
           data: { status: 'cleanup_pending', cleanupRequestedAt: new Date() },
         });
+        if (updated.count === 1) pendingIds.push(id);
+      }
     }
+    return pendingIds;
   }
 
   private async toChatboxSnapshot(

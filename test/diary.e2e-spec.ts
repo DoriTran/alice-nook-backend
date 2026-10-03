@@ -227,6 +227,7 @@ function createDiaryMemory() {
   };
 
   const prisma = {
+    $queryRaw: jest.fn().mockResolvedValue([{ id: 'memory-lock' }]),
     $transaction: jest.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
       const snapshot = {
         groups: groups.map((row) => ({ ...row })),

@@ -7,6 +7,7 @@ import { DiaryService } from './diary.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { DIARY_ORDER_RETRY_MESSAGE } from './diary-order-tx';
 import { ConfigService } from '@nestjs/config';
+import { UploadsService } from '../uploads/uploads.service';
 
 jest.mock('../prisma/prisma.service', () => ({
   PrismaService: class MockPrismaService {},
@@ -77,6 +78,15 @@ function createPrismaMock() {
       createMany: jest.fn(),
       deleteMany: jest.fn(),
     },
+    diaryAttachmentObject: {
+      findMany: jest.fn(),
+      updateMany: jest.fn(),
+    },
+    diaryMessageAttachment: {
+      findFirst: jest.fn(),
+      createMany: jest.fn(),
+      deleteMany: jest.fn(),
+    },
     diaryCustomPalette: {
       findMany: jest.fn(),
       findFirst: jest.fn(),
@@ -103,15 +113,21 @@ function scopedEmpty(prisma: ReturnType<typeof createPrismaMock>) {
   prisma.$transaction.mockImplementation(
     async (fn: (tx: typeof prisma) => Promise<unknown>) => fn(prisma),
   );
+  prisma.$queryRaw.mockResolvedValue([{ id: 'ms:1' }]);
 }
 
 describe('DiaryService', () => {
   let prisma: ReturnType<typeof createPrismaMock>;
   let service: DiaryService;
+  let uploads: { cleanupPendingAttachments: jest.Mock };
 
   beforeEach(() => {
     prisma = createPrismaMock();
-    service = new DiaryService(prisma as unknown as PrismaService);
+    uploads = { cleanupPendingAttachments: jest.fn() };
+    service = new DiaryService(
+      prisma as unknown as PrismaService,
+      uploads as unknown as UploadsService,
+    );
     scopedEmpty(prisma);
   });
 
@@ -144,6 +160,7 @@ describe('DiaryService', () => {
     it('allows durable references and rejects legacy binary writes when enabled', () => {
       const enabled = new DiaryService(
         prisma as unknown as PrismaService,
+        uploads as unknown as UploadsService,
         { get: jest.fn().mockReturnValue('true') } as unknown as ConfigService,
       );
 
@@ -1006,6 +1023,7 @@ describe('DiaryService', () => {
   });
 
   describe('messages', () => {
+    const ATTACHMENT_ID = 'att:123e4567-e89b-42d3-a456-426614174000';
     const doc = {
       json: { type: 'doc', content: [{ type: 'paragraph' }] },
       preview: 'hello',
@@ -1255,6 +1273,219 @@ describe('DiaryService', () => {
           }),
         }),
       );
+    });
+
+    it('cleans up a final durable attachment only after delete transaction commits', async () => {
+      const durable = {
+        id: ATTACHMENT_ID,
+        type: 'image',
+        name: 'tiny.png',
+        mimeType: 'image/png',
+        size: 68,
+      };
+      const uploads = {
+        cleanupPendingAttachments: jest.fn(),
+      };
+      service = new DiaryService(
+        prisma as unknown as PrismaService,
+        uploads as unknown as UploadsService,
+      );
+      prisma.diaryMessage.findFirst.mockResolvedValue({
+        ...createdMessage,
+        attachments: [durable],
+      });
+      prisma.diaryOrder.findUnique.mockResolvedValue({
+        userId: USER_A,
+        rootOrders: ['cb:notes'],
+        groupChatboxOrders: {},
+        chatboxMessageOrders: { 'cb:notes': ['ms:1'] },
+      });
+      prisma.$queryRaw.mockResolvedValue([
+        { id: ATTACHMENT_ID, status: 'committed' },
+      ]);
+      prisma.diaryMessageAttachment.findFirst.mockResolvedValue(null);
+      prisma.diaryAttachmentObject.updateMany.mockResolvedValue({ count: 1 });
+      let transactionCommitted = false;
+      prisma.$transaction.mockImplementation(async (fn) => {
+        const result = await fn(prisma);
+        transactionCommitted = true;
+        return result;
+      });
+      uploads.cleanupPendingAttachments.mockImplementation(() => {
+        expect(transactionCommitted).toBe(true);
+        return Promise.resolve();
+      });
+
+      await service.deleteMessage(USER_A, 'ms:1');
+
+      expect(uploads.cleanupPendingAttachments).toHaveBeenCalledWith(USER_A, [
+        ATTACHMENT_ID,
+      ]);
+    });
+
+    it('does not enqueue a shared attachment that still has a reference', async () => {
+      const uploads = { cleanupPendingAttachments: jest.fn() };
+      service = new DiaryService(
+        prisma as unknown as PrismaService,
+        uploads as unknown as UploadsService,
+      );
+      prisma.diaryMessage.findFirst.mockResolvedValue({
+        ...createdMessage,
+        attachments: [{ id: ATTACHMENT_ID }],
+      });
+      prisma.diaryOrder.findUnique.mockResolvedValue({
+        userId: USER_A,
+        rootOrders: ['cb:notes'],
+        groupChatboxOrders: {},
+        chatboxMessageOrders: { 'cb:notes': ['ms:1'] },
+      });
+      prisma.$queryRaw.mockResolvedValue([
+        { id: ATTACHMENT_ID, status: 'committed' },
+      ]);
+      prisma.diaryMessageAttachment.findFirst.mockResolvedValue({
+        attachmentId: ATTACHMENT_ID,
+      });
+
+      await service.deleteMessage(USER_A, 'ms:1');
+
+      expect(prisma.diaryAttachmentObject.updateMany).not.toHaveBeenCalled();
+      expect(uploads.cleanupPendingAttachments).toHaveBeenCalledWith(
+        USER_A,
+        [],
+      );
+    });
+
+    it('enqueues a final attachment removed by message edit', async () => {
+      prisma.diaryMessage.findFirst.mockResolvedValue({
+        ...createdMessage,
+        attachments: [{ id: ATTACHMENT_ID }],
+      });
+      prisma.diaryMessage.update.mockResolvedValue({
+        ...createdMessage,
+        attachments: [],
+        edited: true,
+      });
+      prisma.$queryRaw.mockResolvedValue([
+        { id: ATTACHMENT_ID, status: 'committed' },
+      ]);
+      prisma.diaryMessageAttachment.findFirst.mockResolvedValue(null);
+      prisma.diaryAttachmentObject.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.editMessage(USER_A, 'ms:1', {
+        variant: 'text',
+        content: doc,
+        attachments: [],
+      });
+
+      expect(prisma.diaryMessageAttachment.deleteMany).toHaveBeenCalledWith({
+        where: { messageId: 'ms:1', attachmentId: { in: [ATTACHMENT_ID] } },
+      });
+      expect(uploads.cleanupPendingAttachments).toHaveBeenCalledWith(USER_A, [
+        ATTACHMENT_ID,
+      ]);
+    });
+
+    it('does not enqueue an attachment removed by edit while another message references it', async () => {
+      prisma.diaryMessage.findFirst.mockResolvedValue({
+        ...createdMessage,
+        attachments: [{ id: ATTACHMENT_ID }],
+      });
+      prisma.diaryMessage.update.mockResolvedValue({
+        ...createdMessage,
+        attachments: [],
+        edited: true,
+      });
+      prisma.$queryRaw.mockResolvedValue([
+        { id: ATTACHMENT_ID, status: 'committed' },
+      ]);
+      prisma.diaryMessageAttachment.findFirst.mockResolvedValue({
+        attachmentId: ATTACHMENT_ID,
+      });
+
+      await service.editMessage(USER_A, 'ms:1', {
+        variant: 'text',
+        content: doc,
+        attachments: [],
+      });
+
+      expect(prisma.diaryAttachmentObject.updateMany).not.toHaveBeenCalled();
+      expect(uploads.cleanupPendingAttachments).toHaveBeenCalledWith(
+        USER_A,
+        [],
+      );
+    });
+
+    it('uses the same cleanup path for a Todo attachment removal', async () => {
+      const todoWithAttachment = {
+        items: [
+          {
+            id: 'todo:1',
+            completed: false,
+            content: doc,
+            attachments: [{ id: ATTACHMENT_ID }],
+          },
+        ],
+      };
+      const todoWithoutAttachment = {
+        items: [
+          {
+            id: 'todo:1',
+            completed: false,
+            content: doc,
+            attachments: [],
+          },
+        ],
+      };
+      prisma.diaryMessage.findFirst.mockResolvedValue({
+        ...createdMessage,
+        variant: 'todo',
+        content: todoWithAttachment,
+      });
+      prisma.diaryMessage.update.mockResolvedValue({
+        ...createdMessage,
+        variant: 'todo',
+        content: todoWithoutAttachment,
+      });
+      prisma.$queryRaw.mockResolvedValue([
+        { id: ATTACHMENT_ID, status: 'committed' },
+      ]);
+      prisma.diaryMessageAttachment.findFirst.mockResolvedValue(null);
+      prisma.diaryAttachmentObject.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.patchMessage(USER_A, 'ms:1', {
+        content: todoWithoutAttachment,
+      });
+
+      expect(uploads.cleanupPendingAttachments).toHaveBeenCalledWith(USER_A, [
+        ATTACHMENT_ID,
+      ]);
+    });
+
+    it('collects attachments before a chatbox cascade delete', async () => {
+      prisma.diaryChatbox.findFirst.mockResolvedValue(ownedChatbox);
+      prisma.diaryMessage.findMany.mockResolvedValue([
+        { attachments: [{ id: ATTACHMENT_ID }], content: doc },
+      ]);
+      prisma.diaryOrder.findUnique.mockResolvedValue({
+        userId: USER_A,
+        rootOrders: ['cb:notes'],
+        groupChatboxOrders: {},
+        chatboxMessageOrders: { 'cb:notes': ['ms:1'] },
+      });
+      prisma.$queryRaw.mockResolvedValue([
+        { id: ATTACHMENT_ID, status: 'committed' },
+      ]);
+      prisma.diaryMessageAttachment.findFirst.mockResolvedValue(null);
+      prisma.diaryAttachmentObject.updateMany.mockResolvedValue({ count: 1 });
+
+      await service.deleteChatbox(USER_A, 'cb:notes');
+
+      expect(prisma.diaryChatbox.delete).toHaveBeenCalledWith({
+        where: { id: 'cb:notes' },
+      });
+      expect(uploads.cleanupPendingAttachments).toHaveBeenCalledWith(USER_A, [
+        ATTACHMENT_ID,
+      ]);
     });
 
     it('replaces message tags without setting edited', async () => {

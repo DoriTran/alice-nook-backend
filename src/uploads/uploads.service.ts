@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
@@ -51,6 +52,8 @@ const kindFrom = (mime: string): string => {
 
 @Injectable()
 export class UploadsService {
+  private readonly logger = new Logger(UploadsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly r2: R2Service,
@@ -130,6 +133,44 @@ export class UploadsService {
       url: await this.r2.presignGet(row.objectKey, GET_TTL_SECONDS),
       expiresAt: expiresAt.toISOString(),
     };
+  }
+
+  async cleanupPendingAttachments(
+    userId: string,
+    attachmentIds: string[],
+  ): Promise<void> {
+    for (const attachmentId of [...new Set(attachmentIds)]) {
+      try {
+        await this.cleanupPendingAttachment(userId, attachmentId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.error(
+          `Failed to clean up attachment ${attachmentId}: ${message}`,
+        );
+      }
+    }
+  }
+
+  async cleanupPendingAttachment(
+    userId: string,
+    attachmentId: string,
+  ): Promise<void> {
+    const row = await this.prisma.diaryAttachmentObject.findFirst({
+      where: { id: attachmentId, userId, status: 'cleanup_pending' },
+      select: { id: true, objectKey: true },
+    });
+    if (!row) return;
+
+    const referenced = await this.prisma.diaryMessageAttachment.findFirst({
+      where: { attachmentId: row.id },
+      select: { attachmentId: true },
+    });
+    if (referenced) return;
+
+    await this.r2.delete(row.objectKey);
+    await this.prisma.diaryAttachmentObject.deleteMany({
+      where: { id: row.id, userId, status: 'cleanup_pending' },
+    });
   }
 
   private async owned(userId: string, id: string) {

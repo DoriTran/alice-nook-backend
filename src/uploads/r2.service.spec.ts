@@ -1,4 +1,4 @@
-import { PutObjectCommand } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { ConfigService } from '@nestjs/config';
 import { R2Service } from './r2.service';
@@ -60,6 +60,25 @@ describe('R2Service', () => {
     });
     expect(jest.mocked(getSignedUrl).mock.calls[0][2]).toEqual({
       expiresIn: 600,
+    });
+  });
+
+  it('deletes an object with the configured bucket and trusted key', async () => {
+    const send = jest.fn().mockResolvedValue({});
+    (
+      service as unknown as {
+        client: { send: typeof send };
+      }
+    ).client.send = send;
+
+    await service.delete('users/user-a/attachments/tiny.png');
+
+    expect(send).toHaveBeenCalledTimes(1);
+    const command = send.mock.calls[0][0] as DeleteObjectCommand;
+    expect(command).toBeInstanceOf(DeleteObjectCommand);
+    expect(command.input).toEqual({
+      Bucket: 'dummy-bucket',
+      Key: 'users/user-a/attachments/tiny.png',
     });
   });
 

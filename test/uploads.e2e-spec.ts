@@ -13,6 +13,7 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { UploadsModule } from './../src/uploads/uploads.module';
 import { PrismaService } from './../src/prisma/prisma.service';
+import { MAX_ATTACHMENT_SIZE_BYTES } from './../src/uploads/upload-validation';
 
 jest.mock('./../src/prisma/prisma.service', () => ({
   PrismaService: class MockPrismaService {},
@@ -132,19 +133,35 @@ describe('UploadsController (e2e)', () => {
   );
 
   it.each([
-    ['image/png', 20 * MEBIBYTE],
-    ['video/mp4', 250 * MEBIBYTE],
-    ['application/pdf', 100 * MEBIBYTE],
-  ])('accepts %s at the category limit', (mimeType, size) =>
-    postPresign({ ...validBody, mimeType, size }).expect(201),
+    'image/png',
+    'video/mp4',
+    'audio/mpeg',
+    'application/pdf',
+    'application/zip',
+    'application/javascript',
+    'application/octet-stream',
+  ])('accepts %s at exactly 200 MiB', (mimeType) =>
+    postPresign({
+      ...validBody,
+      mimeType,
+      size: MAX_ATTACHMENT_SIZE_BYTES,
+    }).expect(201),
   );
 
   it.each([
-    ['image/png', 20 * MEBIBYTE + 1],
-    ['video/mp4', 250 * MEBIBYTE + 1],
-    ['application/pdf', 100 * MEBIBYTE + 1],
-  ])('rejects %s above the category limit', (mimeType, size) =>
-    postPresign({ ...validBody, mimeType, size }).expect(400),
+    'image/png',
+    'video/mp4',
+    'audio/mpeg',
+    'application/pdf',
+    'application/zip',
+    'application/javascript',
+    'application/octet-stream',
+  ])('rejects %s at 200 MiB plus one byte', (mimeType) =>
+    postPresign({
+      ...validBody,
+      mimeType,
+      size: MAX_ATTACHMENT_SIZE_BYTES + 1,
+    }).expect(400),
   );
 
   it.each([0, -1, 1.5])('rejects invalid size %s', (size) =>
