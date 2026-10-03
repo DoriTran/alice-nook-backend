@@ -7,6 +7,7 @@ import { createAuth } from './auth/create-auth';
 import { DiaryModule } from './diary/diary.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { PrismaService } from './prisma/prisma.service';
+import { UploadsModule } from './uploads/uploads.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { PrismaService } from './prisma/prisma.service';
       }),
     }),
     DiaryModule,
+    UploadsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

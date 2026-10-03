@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { DiaryDb, PrismaService } from '../prisma/prisma.service';
+import { ConfigService } from '@nestjs/config';
 import {
   assertOwnedColorId,
   assertPaletteUnused,
@@ -65,6 +66,7 @@ import type { SyncSidebarLayoutDto } from './dto/sync-sidebar-layout.dto';
 import type { UpdateChatboxDto } from './dto/update-chatbox.dto';
 import type { UpdateGroupDto } from './dto/update-group.dto';
 import type { UpdateTagDto } from './dto/update-tag.dto';
+import { isDurableAttachmentId } from './diary-message-content';
 
 const MESSAGE_TAG_INCLUDE = {
   messageTags: { select: { tagId: true } },
@@ -75,7 +77,15 @@ const toLinkPreviewJson = (value: unknown): object =>
 
 @Injectable()
 export class DiaryService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly durableWritesEnabled: boolean;
+
+  constructor(
+    private readonly prisma: PrismaService,
+    config?: ConfigService,
+  ) {
+    this.durableWritesEnabled =
+      config?.get('DIARY_DURABLE_ATTACHMENTS_WRITE_ENABLED') === 'true';
+  }
 
   async reconcileTimers(userId: string): Promise<TimerReconciliationResponse> {
     return this.prisma.$transaction(async (tx) => {
@@ -458,6 +468,7 @@ export class DiaryService {
     dto: CreateMessageDto,
   ): Promise<DiaryMessageSnapshot> {
     const tagIds = dto.tagIds ?? [];
+    this.assertDurableWrite(dto.attachments, dto.content);
 
     return withDiaryOrderTransaction(this.prisma, async (tx) => {
       await this.requireOwnedChatbox(tx, userId, dto.chatboxId);
@@ -488,6 +499,14 @@ export class DiaryService {
         },
       });
 
+      await this.syncAttachmentReferences(
+        tx,
+        userId,
+        message.id,
+        [],
+        this.collectAttachmentIds(dto.attachments, dto.content),
+      );
+
       if (tagIds.length > 0) {
         await tx.diaryMessageTag.createMany({
           data: tagIds.map((tagId) => ({
@@ -517,6 +536,9 @@ export class DiaryService {
     id: string,
     dto: PatchMessageDto,
   ): Promise<DiaryMessageSnapshot> {
+    if (dto.content !== undefined) {
+      this.assertDurableWrite(undefined, dto.content);
+    }
     try {
       const write = async (db: DiaryDb, locked: boolean) => {
         const current = locked
@@ -554,6 +576,15 @@ export class DiaryService {
           },
           include: MESSAGE_TAG_INCLUDE,
         });
+        if (dto.content !== undefined) {
+          await this.syncAttachmentReferences(
+            db,
+            userId,
+            id,
+            this.collectAttachmentIds(current.attachments, current.content),
+            this.collectAttachmentIds(current.attachments, dto.content),
+          );
+        }
         return mapMessage(message);
       };
 
@@ -570,6 +601,7 @@ export class DiaryService {
     id: string,
     dto: EditMessageDto,
   ): Promise<DiaryMessageSnapshot> {
+    this.assertDurableWrite(dto.attachments, dto.content);
     try {
       const write = async (db: DiaryDb, locked: boolean) => {
         const current = locked
@@ -603,6 +635,16 @@ export class DiaryService {
           },
           include: MESSAGE_TAG_INCLUDE,
         });
+        await this.syncAttachmentReferences(
+          db,
+          userId,
+          id,
+          this.collectAttachmentIds(current.attachments, current.content),
+          this.collectAttachmentIds(
+            dto.attachments ?? current.attachments,
+            dto.content,
+          ),
+        );
         return mapMessage(message);
       };
 
@@ -620,7 +662,13 @@ export class DiaryService {
       const orders = await this.loadOrders(tx, userId);
       const next = deleteMessageOrders(orders, message.chatboxId, id);
 
+      const attachmentIds = this.collectAttachmentIds(
+        message.attachments,
+        message.content,
+      );
+
       await tx.diaryMessage.delete({ where: { id } });
+      await this.markUnreferencedForCleanup(tx, attachmentIds);
       await this.saveOrders(tx, userId, next);
     });
   }
@@ -975,6 +1023,143 @@ export class DiaryService {
         chatboxMessageOrders: orders.chatboxMessageOrders,
       },
     });
+  }
+
+  /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument */
+  private collectAttachmentIds(
+    attachments: unknown,
+    content: unknown,
+  ): string[] {
+    const values: unknown[] = Array.isArray(attachments)
+      ? [...attachments]
+      : [];
+    if (
+      content &&
+      typeof content === 'object' &&
+      !Array.isArray(content) &&
+      'items' in content &&
+      Array.isArray(content.items)
+    ) {
+      for (const item of content.items) {
+        if (
+          item &&
+          typeof item === 'object' &&
+          !Array.isArray(item) &&
+          'attachments' in item &&
+          Array.isArray(item.attachments)
+        )
+          values.push(...item.attachments);
+      }
+    }
+    const ids = values.flatMap((value) =>
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      'id' in value &&
+      isDurableAttachmentId(value.id)
+        ? [value.id]
+        : [],
+    );
+    if (ids.length !== new Set(ids).size)
+      throw new BadRequestException('Duplicate durable attachment reference');
+    return ids;
+  }
+
+  private assertDurableWrite(attachments: unknown, content: unknown): void {
+    const values: unknown[] = Array.isArray(attachments)
+      ? [...attachments]
+      : [];
+    if (
+      content &&
+      typeof content === 'object' &&
+      !Array.isArray(content) &&
+      'items' in content &&
+      Array.isArray(content.items)
+    ) {
+      for (const item of content.items)
+        if (
+          item &&
+          typeof item === 'object' &&
+          !Array.isArray(item) &&
+          'attachments' in item &&
+          Array.isArray(item.attachments)
+        )
+          values.push(...item.attachments);
+    }
+    const binaryValues = values.filter(
+      (value) =>
+        value &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        'type' in value &&
+        value.type !== 'link',
+    ) as Array<Record<string, unknown>>;
+    const isDurableReference = (value: Record<string, unknown>) =>
+      isDurableAttachmentId(value.id) && !('url' in value);
+
+    if (!this.durableWritesEnabled && binaryValues.some(isDurableReference)) {
+      throw new BadRequestException('Durable attachment writes are disabled');
+    }
+
+    if (
+      this.durableWritesEnabled &&
+      binaryValues.some((value) => !isDurableReference(value))
+    ) {
+      throw new BadRequestException(
+        'Cloud binary attachments must use durable attachment IDs',
+      );
+    }
+  }
+  /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument */
+
+  private async syncAttachmentReferences(
+    db: DiaryDb,
+    userId: string,
+    messageId: string,
+    previous: string[],
+    next: string[],
+  ) {
+    const added = next.filter((id) => !previous.includes(id));
+    const removed = previous.filter((id) => !next.includes(id));
+    if (added.length) {
+      const rows = await db.diaryAttachmentObject.findMany({
+        where: {
+          id: { in: added },
+          userId,
+          status: { in: ['uploaded', 'committed'] },
+        },
+        select: { id: true },
+      });
+      if (rows.length !== added.length) throw new NotFoundException();
+      await db.diaryMessageAttachment.createMany({
+        data: added.map((attachmentId) => ({ messageId, attachmentId })),
+        skipDuplicates: true,
+      });
+      await db.diaryAttachmentObject.updateMany({
+        where: { id: { in: added }, userId, status: 'uploaded' },
+        data: { status: 'committed', committedAt: new Date() },
+      });
+    }
+    if (removed.length) {
+      await db.diaryMessageAttachment.deleteMany({
+        where: { messageId, attachmentId: { in: removed } },
+      });
+      await this.markUnreferencedForCleanup(db, removed);
+    }
+  }
+
+  private async markUnreferencedForCleanup(db: DiaryDb, ids: string[]) {
+    for (const id of ids) {
+      const referenced = await db.diaryMessageAttachment.findFirst({
+        where: { attachmentId: id },
+        select: { attachmentId: true },
+      });
+      if (!referenced)
+        await db.diaryAttachmentObject.updateMany({
+          where: { id, status: 'committed' },
+          data: { status: 'cleanup_pending', cleanupRequestedAt: new Date() },
+        });
+    }
   }
 
   private async toChatboxSnapshot(

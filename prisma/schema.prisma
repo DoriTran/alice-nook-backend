@@ -29,6 +29,7 @@ model User {
   diaryMessageTags    DiaryMessageTag[]
   diaryCustomPalettes DiaryCustomPalette[]
   diaryOrder          DiaryOrder?
+  diaryAttachmentObjects DiaryAttachmentObject[]
 
   @@unique([email])
   @@map("user")
@@ -154,11 +155,46 @@ model DiaryMessage {
   createdAt        DateTime          @default(now())
   updatedAt        DateTime?
   messageTags      DiaryMessageTag[]
+  attachmentLinks  DiaryMessageAttachment[]
 
   @@index([userId])
   @@index([chatboxId])
   @@index([createdAt])
   @@map("diary_message")
+}
+
+model DiaryAttachmentObject {
+  id                 String   @id
+  userId             String
+  user               User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  objectKey          String   @unique
+  fileName           String
+  mimeType           String
+  size               Int
+  kind               String
+  status             String
+  uploadExpiresAt    DateTime
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  uploadedAt         DateTime?
+  committedAt        DateTime?
+  cleanupRequestedAt DateTime?
+  messageLinks       DiaryMessageAttachment[]
+
+  @@index([userId, status, createdAt])
+  @@index([status, cleanupRequestedAt])
+  @@map("diary_attachment_object")
+}
+
+model DiaryMessageAttachment {
+  messageId    String
+  attachmentId String
+  message      DiaryMessage          @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  attachment   DiaryAttachmentObject @relation(fields: [attachmentId], references: [id], onDelete: Restrict)
+
+  @@id([messageId, attachmentId])
+  @@index([attachmentId])
+  @@map("diary_message_attachment")
 }
 
 model DiaryMessageTag {

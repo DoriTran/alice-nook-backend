@@ -1,4 +1,5 @@
 import {
+  assertAttachments,
   assertLinkPreview,
   assertMessageContent,
   assertReactions,
@@ -12,6 +13,87 @@ const doc = {
 };
 
 describe('message content guards', () => {
+  const durableImage = {
+    id: 'att:123e4567-e89b-42d3-a456-426614174000',
+    type: 'image',
+    name: 'tiny.png',
+    mimeType: 'image/png',
+    size: 68,
+  };
+
+  it('accepts canonical durable binary attachments without a URL', () => {
+    expect(assertAttachments([durableImage])).toBeNull();
+    expect(
+      assertAttachments([
+        {
+          ...durableImage,
+          type: 'video',
+          name: 'clip.mp4',
+          mimeType: 'video/mp4',
+          size: 1024,
+          duration: 1.5,
+        },
+        {
+          ...durableImage,
+          type: 'file',
+          name: 'payload.bin',
+          mimeType: 'application/octet-stream',
+          size: 12,
+        },
+      ]),
+    ).toBeNull();
+  });
+
+  it('rejects malformed or incomplete durable attachment shapes', () => {
+    expect(assertAttachments([{ ...durableImage, id: 'att:not-a-uuid' }])).toBe(
+      'durable attachment id is invalid',
+    );
+    expect(assertAttachments([{ id: 'anything', type: 'image' }])).toBe(
+      'durable attachment id is invalid',
+    );
+  });
+
+  it('keeps legacy and link URL contracts while rejecting transient URLs', () => {
+    expect(
+      assertAttachments([
+        { id: 'legacy:image', type: 'image', url: '/dummy/image.png' },
+      ]),
+    ).toBeNull();
+    expect(
+      assertAttachments([
+        { id: 'link:1', type: 'link', url: 'https://example.com' },
+      ]),
+    ).toBeNull();
+    expect(assertAttachments([{ id: 'link:1', type: 'link' }])).toBe(
+      'link attachment url is required',
+    );
+    expect(
+      assertAttachments([
+        { id: 'legacy:image', type: 'image', url: 'blob:temporary' },
+      ]),
+    ).toBe('legacy attachment url is invalid');
+    expect(
+      assertAttachments([
+        { id: 'link:1', type: 'link', url: 'data:text/plain,nope' },
+      ]),
+    ).toBe('link attachment url is required');
+  });
+
+  it('uses the same durable attachment guard for todo items', () => {
+    expect(
+      assertTodoContent({
+        items: [
+          {
+            id: 'todo:1',
+            completed: false,
+            content: doc,
+            attachments: [durableImage],
+          },
+        ],
+      }),
+    ).toBeNull();
+  });
+
   it('validates link preview state and metadata', () => {
     expect(
       assertLinkPreview({

@@ -6,6 +6,7 @@ import {
 import { DiaryService } from './diary.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { DIARY_ORDER_RETRY_MESSAGE } from './diary-order-tx';
+import { ConfigService } from '@nestjs/config';
 
 jest.mock('../prisma/prisma.service', () => ({
   PrismaService: class MockPrismaService {},
@@ -112,6 +113,56 @@ describe('DiaryService', () => {
     prisma = createPrismaMock();
     service = new DiaryService(prisma as unknown as PrismaService);
     scopedEmpty(prisma);
+  });
+
+  describe('durable attachment feature gate', () => {
+    const durableAttachment = {
+      id: 'att:123e4567-e89b-42d3-a456-426614174000',
+      type: 'image',
+      name: 'tiny.png',
+      mimeType: 'image/png',
+      size: 68,
+    };
+    const assertWrite = (target: DiaryService, attachments: unknown) =>
+      (
+        target as unknown as {
+          assertDurableWrite: (attachments: unknown, content: unknown) => void;
+        }
+      ).assertDurableWrite(attachments, undefined);
+
+    it('rejects new durable references when the feature gate is disabled', () => {
+      expect(() => assertWrite(service, [durableAttachment])).toThrow(
+        new BadRequestException('Durable attachment writes are disabled'),
+      );
+      expect(() =>
+        assertWrite(service, [
+          { id: 'legacy:1', type: 'image', url: '/dummy/image.png' },
+        ]),
+      ).not.toThrow();
+    });
+
+    it('allows durable references and rejects legacy binary writes when enabled', () => {
+      const enabled = new DiaryService(
+        prisma as unknown as PrismaService,
+        { get: jest.fn().mockReturnValue('true') } as unknown as ConfigService,
+      );
+
+      expect(() => assertWrite(enabled, [durableAttachment])).not.toThrow();
+      expect(() =>
+        assertWrite(enabled, [
+          { id: 'legacy:1', type: 'image', url: '/dummy/image.png' },
+        ]),
+      ).toThrow(
+        new BadRequestException(
+          'Cloud binary attachments must use durable attachment IDs',
+        ),
+      );
+      expect(() =>
+        assertWrite(enabled, [
+          { id: 'link:1', type: 'link', url: 'https://example.com' },
+        ]),
+      ).not.toThrow();
+    });
   });
 
   it('returns an empty valid snapshot with default orders for a user with no data', async () => {

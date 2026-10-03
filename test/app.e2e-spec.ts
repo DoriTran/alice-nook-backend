@@ -4,6 +4,7 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
 import { PrismaService } from './../src/prisma/prisma.service';
+import { R2Service } from './../src/uploads/r2.service';
 
 jest.mock('@thallesp/nestjs-better-auth', () => ({
   AllowAnonymous: () => () => undefined,
@@ -31,6 +32,8 @@ describe('AppController (e2e)', () => {
       imports: [AppModule],
     })
       .overrideProvider(PrismaService)
+      .useValue({})
+      .overrideProvider(R2Service)
       .useValue({})
       .compile();
 

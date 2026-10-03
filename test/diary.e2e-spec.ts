@@ -11,6 +11,7 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module';
 import { PrismaService } from './../src/prisma/prisma.service';
+import { R2Service } from './../src/uploads/r2.service';
 
 jest.mock('@thallesp/nestjs-better-auth', () => {
   const { createParamDecorator } =
@@ -860,6 +861,8 @@ describe('DiaryController (e2e)', () => {
     })
       .overrideProvider(PrismaService)
       .useValue(memory.prisma)
+      .overrideProvider(R2Service)
+      .useValue({})
       .compile();
 
     app = moduleFixture.createNestApplication();
@@ -1840,12 +1843,12 @@ describe('DiaryController (e2e)', () => {
     let chatboxes = asRecord(snapshot.body).chatboxes as Array<
       Record<string, unknown>
     >;
-    expect(chatboxes.find((chatbox) => chatbox.id === 'cb:notes')?.tags).toEqual(
-      [{ tagId: 'tag:diary', count: 2 }],
-    );
-    expect(chatboxes.find((chatbox) => chatbox.id === 'cb:other')?.tags).toEqual(
-      [{ tagId: 'tag:diary', count: 1 }],
-    );
+    expect(
+      chatboxes.find((chatbox) => chatbox.id === 'cb:notes')?.tags,
+    ).toEqual([{ tagId: 'tag:diary', count: 2 }]);
+    expect(
+      chatboxes.find((chatbox) => chatbox.id === 'cb:other')?.tags,
+    ).toEqual([{ tagId: 'tag:diary', count: 1 }]);
 
     await request(app.getHttpServer())
       .put('/api/diary/messages/ms:visible/tags')
@@ -1857,9 +1860,9 @@ describe('DiaryController (e2e)', () => {
     chatboxes = asRecord(snapshot.body).chatboxes as Array<
       Record<string, unknown>
     >;
-    expect(chatboxes.find((chatbox) => chatbox.id === 'cb:notes')?.tags).toEqual(
-      [{ tagId: 'tag:diary', count: 1 }],
-    );
+    expect(
+      chatboxes.find((chatbox) => chatbox.id === 'cb:notes')?.tags,
+    ).toEqual([{ tagId: 'tag:diary', count: 1 }]);
 
     await request(app.getHttpServer())
       .put('/api/diary/messages/ms:visible/tags')
@@ -1878,8 +1881,7 @@ describe('DiaryController (e2e)', () => {
 
     expect(
       memory.messageTags.find(
-        (join) =>
-          join.tagId === 'tag:diary' && join.messageId !== 'ms:other',
+        (join) => join.tagId === 'tag:diary' && join.messageId !== 'ms:other',
       ),
     ).toBeUndefined();
     expect(memory.tags.find((tag) => tag.id === 'tag:diary')).toBeTruthy();
@@ -1891,12 +1893,12 @@ describe('DiaryController (e2e)', () => {
     chatboxes = asRecord(snapshot.body).chatboxes as Array<
       Record<string, unknown>
     >;
-    expect(chatboxes.find((chatbox) => chatbox.id === 'cb:notes')?.tags).toEqual(
-      [],
-    );
-    expect(chatboxes.find((chatbox) => chatbox.id === 'cb:other')?.tags).toEqual(
-      [{ tagId: 'tag:diary', count: 1 }],
-    );
+    expect(
+      chatboxes.find((chatbox) => chatbox.id === 'cb:notes')?.tags,
+    ).toEqual([]);
+    expect(
+      chatboxes.find((chatbox) => chatbox.id === 'cb:other')?.tags,
+    ).toEqual([{ tagId: 'tag:diary', count: 1 }]);
 
     await request(app.getHttpServer())
       .delete('/api/diary/messages/ms:other')
@@ -1907,14 +1909,16 @@ describe('DiaryController (e2e)', () => {
     chatboxes = asRecord(snapshot.body).chatboxes as Array<
       Record<string, unknown>
     >;
-    expect(chatboxes.find((chatbox) => chatbox.id === 'cb:other')?.tags).toEqual(
-      [],
-    );
     expect(
-      chatboxes.flatMap((chatbox) => chatbox.tags as unknown[]).every((tag) => {
-        const count = asRecord(tag).count;
-        return typeof count === 'number' && count > 0;
-      }),
+      chatboxes.find((chatbox) => chatbox.id === 'cb:other')?.tags,
+    ).toEqual([]);
+    expect(
+      chatboxes
+        .flatMap((chatbox) => chatbox.tags as unknown[])
+        .every((tag) => {
+          const count = asRecord(tag).count;
+          return typeof count === 'number' && count > 0;
+        }),
     ).toBe(true);
   });
 

@@ -17,6 +17,14 @@ const ATTACHMENT_TYPES = new Set([
   'link',
 ]);
 
+const DURABLE_ATTACHMENT_ID_PATTERN =
+  /^att:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MIME_TYPE_PATTERN = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/;
+const TRANSIENT_URL_PATTERN = /^(?:blob:|data:)/i;
+
+export const isDurableAttachmentId = (value: unknown): value is string =>
+  typeof value === 'string' && DURABLE_ATTACHMENT_ID_PATTERN.test(value);
+
 const TICKET_STATES = new Set(['todo', 'doing', 'done']);
 const TICKET_PLACEMENTS = new Set(['inside', 'outside']);
 const TIMER_MODES = new Set(['timer', 'countup', 'datetime']);
@@ -151,8 +159,68 @@ export function assertAttachments(value: unknown): string | null {
       return 'attachment type is invalid';
     }
 
-    if (typeof item.url !== 'string' || item.url.length === 0) {
-      return 'attachment url is required';
+    if (item.type === 'link') {
+      if (
+        typeof item.url !== 'string' ||
+        item.url.length === 0 ||
+        TRANSIENT_URL_PATTERN.test(item.url)
+      ) {
+        return 'link attachment url is required';
+      }
+      continue;
+    }
+
+    if (item.url !== undefined) {
+      if (
+        typeof item.url !== 'string' ||
+        item.url.length === 0 ||
+        TRANSIENT_URL_PATTERN.test(item.url)
+      ) {
+        return 'legacy attachment url is invalid';
+      }
+      continue;
+    }
+
+    if (!isDurableAttachmentId(item.id)) {
+      return 'durable attachment id is invalid';
+    }
+
+    if (
+      typeof item.name !== 'string' ||
+      item.name.trim().length === 0 ||
+      item.name.length > 255
+    ) {
+      return 'durable attachment name is invalid';
+    }
+
+    if (
+      typeof item.mimeType !== 'string' ||
+      item.mimeType.length > 255 ||
+      item.mimeType !== item.mimeType.trim().toLowerCase() ||
+      !MIME_TYPE_PATTERN.test(item.mimeType)
+    ) {
+      return 'durable attachment mimeType is invalid';
+    }
+
+    if (
+      typeof item.size !== 'number' ||
+      !Number.isInteger(item.size) ||
+      item.size <= 0
+    ) {
+      return 'durable attachment size is invalid';
+    }
+
+    if (
+      (item.width !== undefined &&
+        (typeof item.width !== 'number' || !Number.isFinite(item.width))) ||
+      (item.height !== undefined &&
+        (typeof item.height !== 'number' || !Number.isFinite(item.height))) ||
+      (item.duration !== undefined &&
+        (typeof item.duration !== 'number' ||
+          !Number.isFinite(item.duration))) ||
+      (item.thumbnail !== undefined && typeof item.thumbnail !== 'string')
+    ) {
+      return 'durable attachment display metadata is invalid';
     }
   }
 
