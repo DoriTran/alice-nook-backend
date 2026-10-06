@@ -24,6 +24,10 @@ import {
 } from './message-content.validators';
 
 export class CreateMessageDto {
+  @IsOptional()
+  @IsArray()
+  secretPayloads?: Array<{ secretId: string; fragment: unknown }>;
+
   @IsString()
   @Matches(MESSAGE_ID_REGEX)
   @MaxLength(DIARY_ID_MAX_LENGTH)

@@ -5,6 +5,7 @@ import {
   assertReactions,
   assertRichTextContent,
   assertTodoContent,
+  collectContentTagIds,
 } from './diary-message-content';
 
 const doc = {
@@ -20,6 +21,37 @@ describe('message content guards', () => {
     mimeType: 'image/png',
     size: 68,
   };
+
+  it('collects unique inline Content Tag ids without exposing fallback data', () => {
+    expect(
+      collectContentTagIds({
+        json: {
+          type: 'doc',
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'contentTag',
+                  attrs: {
+                    tagId: 'tag:japanese',
+                    label: 'Japanese',
+                    colorId: 'blush',
+                  },
+                },
+                {
+                  type: 'contentTag',
+                  attrs: { tagId: 'tag:japanese', label: 'Old label' },
+                },
+              ],
+            },
+          ],
+        },
+        preview: '#Japanese#Japanese',
+      }),
+    ).toEqual(['tag:japanese']);
+    expect(collectContentTagIds({ text: '#Japanese' })).toEqual([]);
+  });
 
   it('accepts canonical durable binary attachments without a URL', () => {
     expect(assertAttachments([durableImage])).toBeNull();
@@ -123,6 +155,75 @@ describe('message content guards', () => {
     expect(assertRichTextContent(doc)).toBeNull();
     expect(assertMessageContent('text', doc)).toBeNull();
     expect(assertMessageContent('ai', doc)).toBeNull();
+  });
+
+  it('accepts canonical rich text with formatting marks', () => {
+    const formatted = {
+      json: {
+        type: 'doc',
+        content: [
+          {
+            type: 'paragraph',
+            content: [
+              {
+                type: 'text',
+                text: 'formatted',
+                marks: [{ type: 'bold' }, { type: 'italic' }, { type: 'code' }],
+              },
+            ],
+          },
+        ],
+      },
+      preview: 'formatted',
+    };
+
+    expect(assertRichTextContent(formatted)).toBeNull();
+    expect(assertMessageContent('text', formatted)).toBeNull();
+  });
+
+  it('accepts Phone and Email Content mark attrs unchanged', () => {
+    const contacts = {
+      json: {
+        type: 'doc',
+        content: [
+          {
+            type: 'paragraph',
+            content: [
+              {
+                type: 'text',
+                text: '0909 123 456',
+                marks: [
+                  {
+                    type: 'contentPhone',
+                    attrs: { normalizedPhone: '0909123456' },
+                  },
+                ],
+              },
+              {
+                type: 'text',
+                text: 'Alice@EXAMPLE.COM',
+                marks: [
+                  {
+                    type: 'contentEmail',
+                    attrs: { normalizedEmail: 'Alice@example.com' },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      preview: '0909 123 456Alice@EXAMPLE.COM',
+    };
+
+    expect(assertRichTextContent(contacts)).toBeNull();
+    expect(assertMessageContent('text', contacts)).toBeNull();
+    expect(contacts.json.content[0].content[0].marks[0].attrs).toEqual({
+      normalizedPhone: '0909123456',
+    });
+    expect(contacts.json.content[0].content[1].marks[0].attrs).toEqual({
+      normalizedEmail: 'Alice@example.com',
+    });
   });
 
   it('rejects empty todo items and duplicate item ids', () => {

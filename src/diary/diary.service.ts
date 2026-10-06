@@ -66,8 +66,17 @@ import type { SyncSidebarLayoutDto } from './dto/sync-sidebar-layout.dto';
 import type { UpdateChatboxDto } from './dto/update-chatbox.dto';
 import type { UpdateGroupDto } from './dto/update-group.dto';
 import type { UpdateTagDto } from './dto/update-tag.dto';
-import { isDurableAttachmentId } from './diary-message-content';
+import {
+  collectContentTagIds,
+  isDurableAttachmentId,
+} from './diary-message-content';
 import { UploadsService } from '../uploads/uploads.service';
+import {
+  containsSecretContent,
+  hydrateSecrets,
+  materializeSecrets,
+} from './secret-content';
+import { SecretCryptoService } from './secret-crypto.service';
 
 const MESSAGE_TAG_INCLUDE = {
   messageTags: { select: { tagId: true } },
@@ -79,14 +88,27 @@ const toLinkPreviewJson = (value: unknown): object =>
 @Injectable()
 export class DiaryService {
   private readonly durableWritesEnabled: boolean;
+  private readonly secretCrypto: SecretCryptoService;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly uploads: UploadsService,
     config?: ConfigService,
+    secretCrypto?: SecretCryptoService,
   ) {
     this.durableWritesEnabled =
       config?.get('DIARY_DURABLE_ATTACHMENTS_WRITE_ENABLED') === 'true';
+    this.secretCrypto =
+      secretCrypto ?? new SecretCryptoService(config ?? new ConfigService());
+  }
+
+  private withSecretHydration(
+    message: DiaryMessageSnapshot,
+  ): DiaryMessageSnapshot {
+    return {
+      ...message,
+      secretHydrations: hydrateSecrets(message.content, this.secretCrypto),
+    };
   }
 
   async reconcileTimers(userId: string): Promise<TimerReconciliationResponse> {
@@ -190,6 +212,14 @@ export class DiaryService {
     const orders = mapOrders(orderRow);
 
     return {
+      capabilities: { cloudSecret: this.secretCrypto.enabled },
+      secretHydrations: mappedMessages.reduce<Record<string, unknown>>(
+        (all, message) => ({
+          ...all,
+          ...hydrateSecrets(message.content, this.secretCrypto),
+        }),
+        {},
+      ),
       groups: groups.map((group) => mapGroup(group)),
       chatboxes: chatboxes.map((chatbox) =>
         mapChatbox(chatbox, mappedMessages, messagesById, orders),
@@ -202,7 +232,9 @@ export class DiaryService {
   }
 
   async getMessage(userId: string, id: string): Promise<DiaryMessageSnapshot> {
-    return mapMessage(await this.requireOwnedMessage(this.prisma, userId, id));
+    return this.withSecretHydration(
+      mapMessage(await this.requireOwnedMessage(this.prisma, userId, id)),
+    );
   }
 
   async createGroup(
@@ -491,12 +523,28 @@ export class DiaryService {
     userId: string,
     dto: CreateMessageDto,
   ): Promise<DiaryMessageSnapshot> {
-    const tagIds = dto.tagIds ?? [];
-    this.assertDurableWrite(dto.attachments, dto.content);
+    const requestedTagIds = dto.tagIds ?? [];
+    if (
+      dto.variant !== 'text' &&
+      (dto.secretPayloads?.length || containsSecretContent(dto.content))
+    )
+      throw new BadRequestException('Secret Content requires a Normal message');
+    const content = materializeSecrets(
+      dto.content,
+      dto.secretPayloads,
+      this.secretCrypto,
+    );
+    this.assertDurableWrite(dto.attachments, content);
 
     return withDiaryOrderTransaction(this.prisma, async (tx) => {
       await this.requireOwnedChatbox(tx, userId, dto.chatboxId);
-      await this.requireOwnedTags(tx, userId, tagIds);
+      await this.requireOwnedTags(tx, userId, requestedTagIds);
+      const inlineTagIds = await this.resolveLiveInlineTagIds(
+        tx,
+        userId,
+        content,
+      );
+      const tagIds = [...new Set([...requestedTagIds, ...inlineTagIds])];
       await this.requireLiveReply(tx, userId, dto.replyToMessageId);
       await this.requireSourceLineage(tx, userId, dto.sourceMessageId);
 
@@ -507,7 +555,7 @@ export class DiaryService {
           chatboxId: dto.chatboxId,
           sender: dto.sender,
           variant: dto.variant,
-          content: dto.content as object,
+          content: content as object,
           pinned: dto.pinned ?? false,
           archived: dto.archived ?? false,
           replyToMessageId: dto.replyToMessageId ?? null,
@@ -528,7 +576,7 @@ export class DiaryService {
         userId,
         message.id,
         [],
-        this.collectAttachmentIds(dto.attachments, dto.content),
+        this.collectAttachmentIds(dto.attachments, content),
       );
 
       if (tagIds.length > 0) {
@@ -548,10 +596,12 @@ export class DiaryService {
         appendMessage(orders, dto.chatboxId, message.id),
       );
 
-      return mapMessage({
-        ...message,
-        messageTags: tagIds.map((tagId) => ({ tagId })),
-      });
+      return this.withSecretHydration(
+        mapMessage({
+          ...message,
+          messageTags: tagIds.map((tagId) => ({ tagId })),
+        }),
+      );
     });
   }
 
@@ -561,6 +611,10 @@ export class DiaryService {
     dto: PatchMessageDto,
   ): Promise<DiaryMessageSnapshot> {
     if (dto.content !== undefined) {
+      if (containsSecretContent(dto.content))
+        throw new BadRequestException(
+          'Secret Content requires a Normal message',
+        );
       this.assertDurableWrite(undefined, dto.content);
     }
     try {
@@ -629,16 +683,44 @@ export class DiaryService {
     id: string,
     dto: EditMessageDto,
   ): Promise<DiaryMessageSnapshot> {
-    this.assertDurableWrite(dto.attachments, dto.content);
     try {
       const write = async (db: DiaryDb) => {
         const current = await this.lockOwnedMessage(db, userId, id);
+        if (
+          dto.variant !== 'text' &&
+          (dto.secretPayloads?.length || containsSecretContent(dto.content))
+        )
+          throw new BadRequestException(
+            'Secret Content requires a Normal message',
+          );
+        const content = materializeSecrets(
+          dto.content,
+          dto.secretPayloads,
+          this.secretCrypto,
+          current.content,
+        );
+        this.assertDurableWrite(dto.attachments, content);
         await this.requireLiveReply(db, userId, dto.replyToMessageId);
+        const inlineTagIds = await this.resolveLiveInlineTagIds(
+          db,
+          userId,
+          content,
+        );
+        if (inlineTagIds.length > 0) {
+          await db.diaryMessageTag.createMany({
+            data: inlineTagIds.map((tagId) => ({
+              messageId: id,
+              tagId,
+              userId,
+            })),
+            skipDuplicates: true,
+          });
+        }
         const message = await db.diaryMessage.update({
           where: { id },
           data: {
             variant: dto.variant,
-            content: dto.content as object,
+            content: content as object,
             ...(dto.attachments !== undefined
               ? { attachments: dto.attachments as object }
               : {}),
@@ -668,7 +750,7 @@ export class DiaryService {
           this.collectAttachmentIds(current.attachments, current.content),
           this.collectAttachmentIds(
             dto.attachments ?? current.attachments,
-            dto.content,
+            content,
           ),
         );
         return { message: mapMessage(message), cleanupIds };
@@ -676,7 +758,7 @@ export class DiaryService {
 
       const result = await this.prisma.$transaction((tx) => write(tx));
       await this.uploads.cleanupPendingAttachments(userId, result.cleanupIds);
-      return result.message;
+      return this.withSecretHydration(result.message);
     } catch (error) {
       return mapPrismaDiaryWriteError(error);
     }
@@ -715,14 +797,20 @@ export class DiaryService {
     dto: SetMessageTagsDto,
   ): Promise<DiaryMessageSnapshot> {
     return this.prisma.$transaction(async (tx) => {
-      await this.requireOwnedMessage(tx, userId, id);
+      const current = await this.requireOwnedMessage(tx, userId, id);
       await this.requireOwnedTags(tx, userId, dto.tagIds);
+      const inlineTagIds = await this.resolveLiveInlineTagIds(
+        tx,
+        userId,
+        current.content,
+      );
+      const tagIds = [...new Set([...dto.tagIds, ...inlineTagIds])];
 
       await tx.diaryMessageTag.deleteMany({ where: { messageId: id } });
 
-      if (dto.tagIds.length > 0) {
+      if (tagIds.length > 0) {
         await tx.diaryMessageTag.createMany({
-          data: dto.tagIds.map((tagId) => ({
+          data: tagIds.map((tagId) => ({
             messageId: id,
             tagId,
             userId,
@@ -738,7 +826,7 @@ export class DiaryService {
 
       return mapMessage({
         ...message,
-        messageTags: dto.tagIds.map((tagId) => ({ tagId })),
+        messageTags: tagIds.map((tagId) => ({ tagId })),
       });
     });
   }
@@ -936,6 +1024,25 @@ export class DiaryService {
     if (tags.length !== new Set(tagIds).size) {
       throw new NotFoundException();
     }
+  }
+
+  private async resolveLiveInlineTagIds(
+    db: Pick<DiaryDb, 'diaryTag'>,
+    userId: string,
+    content: unknown,
+  ): Promise<string[]> {
+    const ids = collectContentTagIds(content);
+    if (ids.length === 0) return [];
+
+    const tags = await db.diaryTag.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, userId: true },
+    });
+    if (tags.some((tag) => tag.userId !== userId)) {
+      throw new NotFoundException();
+    }
+    const live = new Set(tags.map((tag) => tag.id));
+    return ids.filter((id) => live.has(id));
   }
 
   private async requireLiveReply(

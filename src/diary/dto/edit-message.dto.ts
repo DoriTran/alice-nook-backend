@@ -1,4 +1,5 @@
 import {
+  IsArray,
   IsIn,
   IsOptional,
   IsString,
@@ -15,6 +16,10 @@ import {
 } from './message-content.validators';
 
 export class EditMessageDto {
+  @IsOptional()
+  @IsArray()
+  secretPayloads?: Array<{ secretId: string; fragment: unknown }>;
+
   @IsIn(['text', 'todo', 'ai'])
   variant: 'text' | 'todo' | 'ai';
 

@@ -184,6 +184,8 @@ describe('DiaryService', () => {
 
   it('returns an empty valid snapshot with default orders for a user with no data', async () => {
     await expect(service.getSnapshot(USER_A)).resolves.toEqual({
+      capabilities: { cloudSecret: false },
+      secretHydrations: {},
       groups: [],
       chatboxes: [],
       messages: [],
@@ -1134,6 +1136,134 @@ describe('DiaryService', () => {
           }),
         }),
       );
+    });
+
+    it('adds unique owned inline Content Tags to message metadata', async () => {
+      const tagged = {
+        json: {
+          type: 'doc',
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'contentTag',
+                  attrs: {
+                    tagId: 'tag:diary',
+                    label: 'Diary',
+                    colorId: 'blush',
+                  },
+                },
+                {
+                  type: 'contentTag',
+                  attrs: {
+                    tagId: 'tag:diary',
+                    label: 'Diary',
+                    colorId: 'blush',
+                  },
+                },
+              ],
+            },
+          ],
+        },
+        preview: '#Diary#Diary',
+      };
+      prisma.diaryChatbox.findFirst.mockResolvedValue(ownedChatbox);
+      prisma.diaryTag.findMany.mockResolvedValue([
+        { id: 'tag:diary', userId: USER_A },
+      ]);
+      prisma.diaryMessage.create.mockResolvedValue({
+        ...createdMessage,
+        content: tagged,
+      });
+
+      await expect(
+        service.createMessage(USER_A, {
+          id: 'ms:1',
+          chatboxId: 'cb:notes',
+          sender: 'user',
+          variant: 'text',
+          content: tagged,
+        }),
+      ).resolves.toMatchObject({ tagIds: ['tag:diary'] });
+      expect(prisma.diaryMessageTag.createMany).toHaveBeenCalledWith({
+        data: [{ messageId: 'ms:1', tagId: 'tag:diary', userId: USER_A }],
+      });
+    });
+
+    it('keeps a deleted inline Tag as display-only fallback', async () => {
+      const tagged = {
+        json: {
+          type: 'doc',
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'contentTag',
+                  attrs: { tagId: 'tag:gone', label: 'Gone', colorId: 'blush' },
+                },
+              ],
+            },
+          ],
+        },
+        preview: '#Gone',
+      };
+      prisma.diaryChatbox.findFirst.mockResolvedValue(ownedChatbox);
+      prisma.diaryTag.findMany.mockResolvedValue([]);
+      prisma.diaryMessage.create.mockResolvedValue({
+        ...createdMessage,
+        content: tagged,
+      });
+
+      await expect(
+        service.createMessage(USER_A, {
+          id: 'ms:1',
+          chatboxId: 'cb:notes',
+          sender: 'user',
+          variant: 'text',
+          content: tagged,
+        }),
+      ).resolves.toMatchObject({ tagIds: [] });
+    });
+
+    it('rejects an inline Content Tag owned by another user', async () => {
+      const tagged = {
+        json: {
+          type: 'doc',
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'contentTag',
+                  attrs: {
+                    tagId: 'tag:other',
+                    label: 'Other',
+                    colorId: 'blush',
+                  },
+                },
+              ],
+            },
+          ],
+        },
+        preview: '#Other',
+      };
+      prisma.diaryChatbox.findFirst.mockResolvedValue(ownedChatbox);
+      prisma.diaryTag.findMany.mockResolvedValue([
+        { id: 'tag:other', userId: USER_B },
+      ]);
+
+      await expect(
+        service.createMessage(USER_A, {
+          id: 'ms:1',
+          chatboxId: 'cb:notes',
+          sender: 'user',
+          variant: 'text',
+          content: tagged,
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.diaryMessage.create).not.toHaveBeenCalled();
     });
 
     it('allows a dangling sourceMessageId after the origin is gone', async () => {

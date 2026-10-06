@@ -1,4 +1,6 @@
 export type DiarySnapshot = {
+  capabilities: { cloudSecret: boolean };
+  secretHydrations: Record<string, unknown>;
   groups: DiaryGroupSnapshot[];
   chatboxes: DiaryChatboxSnapshot[];
   messages: DiaryMessageSnapshot[];
@@ -80,4 +82,5 @@ export type DiaryMessageSnapshot = {
   linkPreview: unknown;
   createdAt: string;
   updatedAt: string | null;
+  secretHydrations?: Record<string, unknown>;
 };

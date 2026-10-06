@@ -22,6 +22,25 @@ const DURABLE_ATTACHMENT_ID_PATTERN =
 const MIME_TYPE_PATTERN = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/;
 const TRANSIENT_URL_PATTERN = /^(?:blob:|data:)/i;
 
+export const collectContentTagIds = (content: unknown): string[] => {
+  if (!isPlainObject(content) || !isPlainObject(content.json)) return [];
+  const ids = new Set<string>();
+  const visit = (node: unknown) => {
+    if (!isPlainObject(node)) return;
+    if (
+      node.type === 'contentTag' &&
+      isPlainObject(node.attrs) &&
+      typeof node.attrs.tagId === 'string' &&
+      node.attrs.tagId.trim()
+    ) {
+      ids.add(node.attrs.tagId.trim());
+    }
+    if (Array.isArray(node.content)) node.content.forEach(visit);
+  };
+  visit(content.json);
+  return [...ids];
+};
+
 export const isDurableAttachmentId = (value: unknown): value is string =>
   typeof value === 'string' && DURABLE_ATTACHMENT_ID_PATTERN.test(value);
 
