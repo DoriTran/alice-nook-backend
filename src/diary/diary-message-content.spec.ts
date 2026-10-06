@@ -53,6 +53,34 @@ describe('message content guards', () => {
     expect(collectContentTagIds({ text: '#Japanese' })).toEqual([]);
   });
 
+  it('collects and deduplicates Content Tags across Todo rows', () => {
+    expect(
+      collectContentTagIds({
+        items: [
+          {
+            content: {
+              json: {
+                type: 'doc',
+                content: [{ type: 'contentTag', attrs: { tagId: 'tag:one' } }],
+              },
+            },
+          },
+          {
+            content: {
+              json: {
+                type: 'doc',
+                content: [
+                  { type: 'contentTag', attrs: { tagId: 'tag:one' } },
+                  { type: 'contentTag', attrs: { tagId: 'tag:two' } },
+                ],
+              },
+            },
+          },
+        ],
+      }),
+    ).toEqual(['tag:one', 'tag:two']);
+  });
+
   it('accepts canonical durable binary attachments without a URL', () => {
     expect(assertAttachments([durableImage])).toBeNull();
     expect(

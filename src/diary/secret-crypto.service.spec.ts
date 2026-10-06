@@ -77,6 +77,43 @@ describe('SecretCryptoService', () => {
     });
   });
 
+  it('materializes and hydrates Secrets inside Todo rows', () => {
+    const service = new SecretCryptoService(
+      new ConfigService({ ALICE_SECRET_KEY: key }),
+    );
+    const content = {
+      items: [
+        {
+          id: 'todo:1',
+          completed: false,
+          attachments: [],
+          content: {
+            json: {
+              type: 'doc',
+              content: [
+                {
+                  type: 'secretContentBlock',
+                  attrs: { secretId: 'secret:todo', displayLength: 0 },
+                },
+              ],
+            },
+            preview: '[Secret]',
+          },
+        },
+      ],
+    };
+    const encrypted = materializeSecrets(
+      content,
+      [{ secretId: 'secret:todo', fragment }],
+      service,
+    );
+
+    expect(JSON.stringify(encrypted)).not.toContain('alice@example.com');
+    expect(hydrateSecrets(encrypted, service)).toEqual({
+      'secret:todo': fragment,
+    });
+  });
+
   it('allows one Copy wrapper inside an encrypted fragment but rejects same-type nesting', () => {
     const service = new SecretCryptoService(
       new ConfigService({ ALICE_SECRET_KEY: key }),

@@ -64,14 +64,18 @@ export const graphemeLength = (fragment: unknown): number => {
 export const containsSecretContent = (content: unknown): boolean => {
   let found = false;
   const visit = (value: unknown) => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
     if (!isRecord(value) || found) return;
     if (SECRET_TYPES.has(String(value.type))) {
       found = true;
       return;
     }
-    if (Array.isArray(value.content)) value.content.forEach(visit);
+    Object.values(value).forEach(visit);
   };
-  if (isRecord(content) && isRecord(content.json)) visit(content.json);
+  visit(content);
   return found;
 };
 
@@ -85,16 +89,19 @@ export const materializeSecrets = (
   const used = new Set<string>();
   const existing = new Map<string, string>();
   const collectExisting = (value: unknown) => {
+    if (Array.isArray(value)) {
+      value.forEach(collectExisting);
+      return;
+    }
     if (!isRecord(value)) return;
     if (SECRET_TYPES.has(String(value.type)) && isRecord(value.attrs)) {
       if (typeof value.attrs.secretId === 'string')
         existing.set(value.attrs.secretId, JSON.stringify(value.attrs));
       return;
     }
-    if (Array.isArray(value.content)) value.content.forEach(collectExisting);
+    Object.values(value).forEach(collectExisting);
   };
-  if (isRecord(currentContent) && isRecord(currentContent.json))
-    collectExisting(currentContent.json);
+  collectExisting(currentContent);
   const visit = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(visit);
     if (!isRecord(value)) return value;
@@ -145,6 +152,10 @@ export const hydrateSecrets = (
   const hydration: Record<string, unknown> = {};
   if (!crypto.enabled) return hydration;
   const visit = (value: unknown) => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
     if (!isRecord(value)) return;
     if (SECRET_TYPES.has(String(value.type)) && isRecord(value.attrs)) {
       const id = value.attrs.secretId;
@@ -157,8 +168,8 @@ export const hydrateSecrets = (
       }
       return;
     }
-    if (Array.isArray(value.content)) value.content.forEach(visit);
+    Object.values(value).forEach(visit);
   };
-  if (isRecord(content) && isRecord(content.json)) visit(content.json);
+  visit(content);
   return hydration;
 };

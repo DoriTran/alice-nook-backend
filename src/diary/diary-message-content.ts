@@ -23,9 +23,12 @@ const MIME_TYPE_PATTERN = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/;
 const TRANSIENT_URL_PATTERN = /^(?:blob:|data:)/i;
 
 export const collectContentTagIds = (content: unknown): string[] => {
-  if (!isPlainObject(content) || !isPlainObject(content.json)) return [];
   const ids = new Set<string>();
   const visit = (node: unknown) => {
+    if (Array.isArray(node)) {
+      node.forEach(visit);
+      return;
+    }
     if (!isPlainObject(node)) return;
     if (
       node.type === 'contentTag' &&
@@ -35,9 +38,9 @@ export const collectContentTagIds = (content: unknown): string[] => {
     ) {
       ids.add(node.attrs.tagId.trim());
     }
-    if (Array.isArray(node.content)) node.content.forEach(visit);
+    Object.values(node).forEach(visit);
   };
-  visit(content.json);
+  visit(content);
   return [...ids];
 };
 
