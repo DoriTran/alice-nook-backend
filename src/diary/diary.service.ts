@@ -529,7 +529,9 @@ export class DiaryService {
       dto.variant !== 'column' &&
       (dto.secretPayloads?.length || containsSecretContent(dto.content))
     )
-      throw new BadRequestException('Secret Content requires a Normal message');
+      throw new BadRequestException(
+        'Secret Content is only supported in Normal and Column messages',
+      );
     const content = materializeSecrets(
       dto.content,
       dto.secretPayloads,
@@ -614,7 +616,7 @@ export class DiaryService {
     if (dto.content !== undefined) {
       if (containsSecretContent(dto.content))
         throw new BadRequestException(
-          'Secret Content requires a Normal message',
+          'Secret Content is only supported in Normal and Column messages',
         );
       this.assertDurableWrite(undefined, dto.content);
     }
@@ -693,7 +695,7 @@ export class DiaryService {
           (dto.secretPayloads?.length || containsSecretContent(dto.content))
         )
           throw new BadRequestException(
-            'Secret Content requires a Normal message',
+            'Secret Content is only supported in Normal and Column messages',
           );
         const content = materializeSecrets(
           dto.content,

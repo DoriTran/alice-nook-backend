@@ -114,6 +114,46 @@ describe('SecretCryptoService', () => {
     });
   });
 
+  it('materializes and hydrates Secrets inside Column content', () => {
+    const service = new SecretCryptoService(
+      new ConfigService({ ALICE_SECRET_KEY: key }),
+    );
+    const content = {
+      columns: [
+        {
+          id: 'column:123e4567-e89b-42d3-a456-426614174000',
+          content: {
+            json: {
+              type: 'doc',
+              content: [
+                {
+                  type: 'paragraph',
+                  content: [
+                    {
+                      type: 'secretContentInline',
+                      attrs: { secretId: 'secret:column', displayLength: 0 },
+                    },
+                  ],
+                },
+              ],
+            },
+            preview: '[Secret]',
+          },
+        },
+      ],
+    };
+    const encrypted = materializeSecrets(
+      content,
+      [{ secretId: 'secret:column', fragment }],
+      service,
+    );
+
+    expect(JSON.stringify(encrypted)).not.toContain('alice@example.com');
+    expect(hydrateSecrets(encrypted, service)).toEqual({
+      'secret:column': fragment,
+    });
+  });
+
   it('allows one Copy wrapper inside an encrypted fragment but rejects same-type nesting', () => {
     const service = new SecretCryptoService(
       new ConfigService({ ALICE_SECRET_KEY: key }),
