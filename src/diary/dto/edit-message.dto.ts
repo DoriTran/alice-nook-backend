@@ -20,8 +20,8 @@ export class EditMessageDto {
   @IsArray()
   secretPayloads?: Array<{ secretId: string; fragment: unknown }>;
 
-  @IsIn(['text', 'todo', 'ai'])
-  variant: 'text' | 'todo' | 'ai';
+  @IsIn(['text', 'todo', 'ai', 'column'])
+  variant: 'text' | 'todo' | 'ai' | 'column';
 
   @IsVariantContent()
   content: unknown;

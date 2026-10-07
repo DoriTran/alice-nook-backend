@@ -21,6 +21,8 @@ const DURABLE_ATTACHMENT_ID_PATTERN =
   /^att:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MIME_TYPE_PATTERN = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/;
 const TRANSIENT_URL_PATTERN = /^(?:blob:|data:)/i;
+const COLUMN_ID_PATTERN =
+  /^column:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export const collectContentTagIds = (content: unknown): string[] => {
   const ids = new Set<string>();
@@ -144,6 +146,36 @@ export function assertTodoContent(value: unknown): string | null {
   return null;
 }
 
+export function assertColumnContent(value: unknown): string | null {
+  if (!isPlainObject(value) || !Array.isArray(value.columns)) {
+    return 'Column content.columns must be an array';
+  }
+  if (Object.keys(value).some((key) => key !== 'columns')) {
+    return 'Column content must have only columns';
+  }
+  if (value.columns.length < 2) {
+    return 'Column content.columns must contain at least two columns';
+  }
+
+  const ids = new Set<string>();
+  for (const column of value.columns) {
+    if (!isPlainObject(column)) return 'Column must be an object';
+    if (Object.keys(column).some((key) => key !== 'id' && key !== 'content')) {
+      return 'Column must have only id and content';
+    }
+    if (typeof column.id !== 'string' || column.id.length === 0) {
+      return 'Column id is required';
+    }
+    if (column.id.length > DIARY_ID_MAX_LENGTH) return 'Column id is too long';
+    if (!COLUMN_ID_PATTERN.test(column.id)) return 'Column id is invalid';
+    if (ids.has(column.id)) return 'Duplicate column id';
+    ids.add(column.id);
+    const contentError = assertRichTextContent(column.content);
+    if (contentError) return contentError;
+  }
+  return null;
+}
+
 export function assertMessageContent(
   variant: string,
   content: unknown,
@@ -154,6 +186,10 @@ export function assertMessageContent(
 
   if (variant === 'todo') {
     return assertTodoContent(content);
+  }
+
+  if (variant === 'column') {
+    return assertColumnContent(content);
   }
 
   return 'variant is invalid';

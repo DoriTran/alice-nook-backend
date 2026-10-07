@@ -41,8 +41,8 @@ export class CreateMessageDto {
   @IsIn(['user', 'assistant'])
   sender: 'user' | 'assistant';
 
-  @IsIn(['text', 'todo', 'ai'])
-  variant: 'text' | 'todo' | 'ai';
+  @IsIn(['text', 'todo', 'ai', 'column'])
+  variant: 'text' | 'todo' | 'ai' | 'column';
 
   @IsVariantContent()
   content: unknown;

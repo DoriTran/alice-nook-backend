@@ -526,6 +526,7 @@ export class DiaryService {
     const requestedTagIds = dto.tagIds ?? [];
     if (
       dto.variant !== 'text' &&
+      dto.variant !== 'column' &&
       (dto.secretPayloads?.length || containsSecretContent(dto.content))
     )
       throw new BadRequestException('Secret Content requires a Normal message');
@@ -688,6 +689,7 @@ export class DiaryService {
         const current = await this.lockOwnedMessage(db, userId, id);
         if (
           dto.variant !== 'text' &&
+          dto.variant !== 'column' &&
           (dto.secretPayloads?.length || containsSecretContent(dto.content))
         )
           throw new BadRequestException(

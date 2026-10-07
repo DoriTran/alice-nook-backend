@@ -1,5 +1,6 @@
 import {
   assertAttachments,
+  assertColumnContent,
   assertLinkPreview,
   assertMessageContent,
   assertReactions,
@@ -21,6 +22,34 @@ describe('message content guards', () => {
     mimeType: 'image/png',
     size: 68,
   };
+
+  it('accepts ordered columns and rejects invalid identities or counts', () => {
+    const valid = {
+      columns: [
+        {
+          id: 'column:123e4567-e89b-42d3-a456-426614174000',
+          content: doc,
+        },
+        {
+          id: 'column:223e4567-e89b-42d3-a456-426614174000',
+          content: { ...doc, preview: '' },
+        },
+      ],
+    };
+    expect(assertColumnContent(valid)).toBeNull();
+    expect(assertMessageContent('column', valid)).toBeNull();
+    expect(assertColumnContent({ columns: valid.columns.slice(0, 1) })).toBe(
+      'Column content.columns must contain at least two columns',
+    );
+    expect(
+      assertColumnContent({ columns: [valid.columns[0], valid.columns[0]] }),
+    ).toBe('Duplicate column id');
+    expect(
+      assertColumnContent({
+        columns: [valid.columns[0], { id: '', content: doc }],
+      }),
+    ).toBe('Column id is required');
+  });
 
   it('collects unique inline Content Tag ids without exposing fallback data', () => {
     expect(
