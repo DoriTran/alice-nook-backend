@@ -23,6 +23,10 @@ const MIME_TYPE_PATTERN = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/;
 const TRANSIENT_URL_PATTERN = /^(?:blob:|data:)/i;
 const COLUMN_ID_PATTERN =
   /^column:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const TABLE_COLUMN_ID_PATTERN =
+  /^table-column:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const TABLE_ROW_ID_PATTERN =
+  /^table-row:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export const collectContentTagIds = (content: unknown): string[] => {
   const ids = new Set<string>();
@@ -176,6 +180,86 @@ export function assertColumnContent(value: unknown): string | null {
   return null;
 }
 
+export function assertTableContent(value: unknown): string | null {
+  if (
+    !isPlainObject(value) ||
+    !Array.isArray(value.columns) ||
+    !Array.isArray(value.rows)
+  )
+    return 'Table content must contain columns and rows';
+  if (Object.keys(value).some((key) => key !== 'columns' && key !== 'rows'))
+    return 'Table content must have only columns and rows';
+  if (value.columns.length < 1 || value.rows.length < 1)
+    return 'Table must contain at least one row and column';
+  const columnIds = new Set<string>();
+  for (const column of value.columns) {
+    if (
+      !isPlainObject(column) ||
+      Object.keys(column).some((key) => key !== 'id' && key !== 'width')
+    )
+      return 'Table column is invalid';
+    if (
+      typeof column.id !== 'string' ||
+      !TABLE_COLUMN_ID_PATTERN.test(column.id) ||
+      columnIds.has(column.id)
+    )
+      return 'Table column id is invalid or duplicate';
+    if (
+      typeof column.width !== 'number' ||
+      !Number.isFinite(column.width) ||
+      column.width <= 0
+    )
+      return 'Table column width is invalid';
+    columnIds.add(column.id);
+  }
+  const rowIds = new Set<string>();
+  for (const row of value.rows) {
+    if (
+      !isPlainObject(row) ||
+      Object.keys(row).some(
+        (key) => !['id', 'minHeight', 'cells'].includes(key),
+      )
+    )
+      return 'Table row is invalid';
+    if (
+      typeof row.id !== 'string' ||
+      !TABLE_ROW_ID_PATTERN.test(row.id) ||
+      rowIds.has(row.id)
+    )
+      return 'Table row id is invalid or duplicate';
+    if (
+      typeof row.minHeight !== 'number' ||
+      !Number.isFinite(row.minHeight) ||
+      row.minHeight <= 0
+    )
+      return 'Table row minHeight is invalid';
+    if (!isPlainObject(row.cells)) return 'Table row cells must be an object';
+    rowIds.add(row.id);
+    for (const [columnId, cell] of Object.entries(row.cells)) {
+      if (!columnIds.has(columnId) || !isPlainObject(cell))
+        return 'Table cell is invalid';
+      if (cell.kind === 'richText') {
+        if (
+          Object.keys(cell).some((key) => key !== 'kind' && key !== 'content')
+        )
+          return 'Rich text table cell is invalid';
+        const error = assertRichTextContent(cell.content);
+        if (error) return error;
+      } else if (cell.kind === 'attachment') {
+        if (
+          Object.keys(cell).some(
+            (key) => key !== 'kind' && key !== 'attachment',
+          )
+        )
+          return 'Attachment table cell is invalid';
+        const error = assertAttachments([cell.attachment]);
+        if (error) return error;
+      } else return 'Table cell kind is invalid';
+    }
+  }
+  return null;
+}
+
 export function assertMessageContent(
   variant: string,
   content: unknown,
@@ -191,6 +275,7 @@ export function assertMessageContent(
   if (variant === 'column') {
     return assertColumnContent(content);
   }
+  if (variant === 'table') return assertTableContent(content);
 
   return 'variant is invalid';
 }

@@ -527,10 +527,11 @@ export class DiaryService {
     if (
       dto.variant !== 'text' &&
       dto.variant !== 'column' &&
+      dto.variant !== 'table' &&
       (dto.secretPayloads?.length || containsSecretContent(dto.content))
     )
       throw new BadRequestException(
-        'Secret Content is only supported in Normal and Column messages',
+        'Secret Content is only supported in Normal, Column, and Table messages',
       );
     const content = materializeSecrets(
       dto.content,
@@ -616,7 +617,7 @@ export class DiaryService {
     if (dto.content !== undefined) {
       if (containsSecretContent(dto.content))
         throw new BadRequestException(
-          'Secret Content is only supported in Normal and Column messages',
+          'Secret Content is only supported in Normal, Column, and Table messages',
         );
       this.assertDurableWrite(undefined, dto.content);
     }
@@ -692,10 +693,11 @@ export class DiaryService {
         if (
           dto.variant !== 'text' &&
           dto.variant !== 'column' &&
+          dto.variant !== 'table' &&
           (dto.secretPayloads?.length || containsSecretContent(dto.content))
         )
           throw new BadRequestException(
-            'Secret Content is only supported in Normal and Column messages',
+            'Secret Content is only supported in Normal, Column, and Table messages',
           );
         const content = materializeSecrets(
           dto.content,
@@ -1198,6 +1200,37 @@ export class DiaryService {
           values.push(...item.attachments);
       }
     }
+    if (
+      content &&
+      typeof content === 'object' &&
+      !Array.isArray(content) &&
+      'rows' in content &&
+      Array.isArray(content.rows)
+    ) {
+      for (const row of content.rows) {
+        if (
+          !row ||
+          typeof row !== 'object' ||
+          Array.isArray(row) ||
+          !('cells' in row) ||
+          !row.cells ||
+          typeof row.cells !== 'object' ||
+          Array.isArray(row.cells)
+        )
+          continue;
+        for (const cell of Object.values(row.cells)) {
+          if (
+            cell &&
+            typeof cell === 'object' &&
+            !Array.isArray(cell) &&
+            'kind' in cell &&
+            cell.kind === 'attachment' &&
+            'attachment' in cell
+          )
+            values.push(cell.attachment);
+        }
+      }
+    }
     const ids = values.flatMap((value) =>
       value &&
       typeof value === 'object' &&
@@ -1232,6 +1265,37 @@ export class DiaryService {
           Array.isArray(item.attachments)
         )
           values.push(...item.attachments);
+    }
+    if (
+      content &&
+      typeof content === 'object' &&
+      !Array.isArray(content) &&
+      'rows' in content &&
+      Array.isArray(content.rows)
+    ) {
+      for (const row of content.rows) {
+        if (
+          !row ||
+          typeof row !== 'object' ||
+          Array.isArray(row) ||
+          !('cells' in row) ||
+          !row.cells ||
+          typeof row.cells !== 'object' ||
+          Array.isArray(row.cells)
+        )
+          continue;
+        for (const cell of Object.values(row.cells)) {
+          if (
+            cell &&
+            typeof cell === 'object' &&
+            !Array.isArray(cell) &&
+            'kind' in cell &&
+            cell.kind === 'attachment' &&
+            'attachment' in cell
+          )
+            values.push(cell.attachment);
+        }
+      }
     }
     const binaryValues = values.filter(
       (value) =>

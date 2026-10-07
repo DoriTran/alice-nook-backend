@@ -6,6 +6,7 @@ import {
   assertReactions,
   assertRichTextContent,
   assertTodoContent,
+  assertTableContent,
   collectContentTagIds,
 } from './diary-message-content';
 
@@ -49,6 +50,55 @@ describe('message content guards', () => {
         columns: [valid.columns[0], { id: '', content: doc }],
       }),
     ).toBe('Column id is required');
+  });
+
+  it('accepts sparse Table cells and rejects unknown columns or mixed cell shapes', () => {
+    const columnId = 'table-column:123e4567-e89b-42d3-a456-426614174000';
+    const valid = {
+      columns: [{ id: columnId, width: 160 }],
+      rows: [
+        {
+          id: 'table-row:223e4567-e89b-42d3-a456-426614174000',
+          minHeight: 48,
+          cells: { [columnId]: { kind: 'richText', content: doc } },
+        },
+      ],
+    };
+    expect(assertTableContent(valid)).toBeNull();
+    expect(assertMessageContent('table', valid)).toBeNull();
+    expect(
+      assertTableContent({
+        ...valid,
+        rows: [
+          {
+            ...valid.rows[0],
+            cells: {
+              'table-column:323e4567-e89b-42d3-a456-426614174000': {
+                kind: 'richText',
+                content: doc,
+              },
+            },
+          },
+        ],
+      }),
+    ).toBe('Table cell is invalid');
+    expect(
+      assertTableContent({
+        ...valid,
+        rows: [
+          {
+            ...valid.rows[0],
+            cells: {
+              [columnId]: {
+                kind: 'richText',
+                content: doc,
+                attachment: durableImage,
+              },
+            },
+          },
+        ],
+      }),
+    ).toBe('Rich text table cell is invalid');
   });
 
   it('collects unique inline Content Tag ids without exposing fallback data', () => {
